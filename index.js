@@ -45,6 +45,10 @@ if (process.env.DATABASE_URL) {
     .catch((e) => console.error('neon init', e.message));
 }
 
+// Crash visibility: log instead of dying silently (Render would 502 on a crash).
+process.on('unhandledRejection', (e) => console.error('unhandledRejection:', e && e.message, e));
+process.on('uncaughtException', (e) => console.error('uncaughtException:', e && e.message, e));
+
 const app = express();
 app.use(express.urlencoded({ extended: false }));
 app.use(express.json());
@@ -71,30 +75,32 @@ app.post('/start-call', async (req, res) => {
   if (active && active.mode !== 'done') return res.status(409).json({ ok: false, error: 'a call is already active' });
 
   const id = 's' + Date.now();
-  const from = nextNumber();
-
-  active = new Session({
-    id,
-    script: req.body.script || '',
-    leadContext: req.body.screenText || '',
-    persona: req.body.persona || '',
-    twilioClient: client,
-    onLog: (m) => console.log(`[${id}] ${m}`),
-  });
-  active.onDone = (reason) => {
-    if (pool) {
-      pool
-        .query(`INSERT INTO calls (session_id, customer_call_sid, outcome, script) VALUES ($1,$2,$3,$4)`, [
-          id,
-          active && active.customerCallSid,
-          reason,
-          req.body.script || '',
-        ])
-        .catch(() => {});
-    }
-  };
 
   try {
+    if (!PUBLIC_HOST) throw new Error('PUBLIC_HOST not set');
+    const from = nextNumber(); // throws if TWILIO_NUMBERS is missing
+
+    active = new Session({
+      id,
+      script: req.body.script || '',
+      leadContext: req.body.screenText || '',
+      persona: req.body.persona || '',
+      twilioClient: client,
+      onLog: (m) => console.log(`[${id}] ${m}`),
+    });
+    active.onDone = (reason) => {
+      if (pool) {
+        pool
+          .query(`INSERT INTO calls (session_id, customer_call_sid, outcome, script) VALUES ($1,$2,$3,$4)`, [
+            id,
+            active && active.customerCallSid,
+            reason,
+            req.body.script || '',
+          ])
+          .catch(() => {});
+      }
+    };
+
     const base = `https://${PUBLIC_HOST}`;
     const customerCall = await client.calls.create({
       to: customerNumber,
