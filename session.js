@@ -55,9 +55,13 @@ class Session {
     this.greeted = false;
 
     // Warm-takeover state. The agent says a handoff line, lets it finish playing,
-    // then bridges you in — as if a manager overheard and stepped in.
+    // then bridges in the manager — as if they stepped in to help.
     this.handingOff = false;
     this.handoffAudioDone = false;
+    this.fromNumber = opts.from || null; // caller-ID to dial the manager from
+    this.managerNumber = opts.managerNumber || process.env.MANAGER_NUMBER || process.env.REP_CELL || null;
+    this.managerRingMs = Number(process.env.MANAGER_RING_TIMEOUT || 30000);
+    this._managerDialed = false;
     const repName = opts.repName || process.env.REP_NAME || 'my sales manager';
     this.handoffLine =
       opts.handoffLine ||
@@ -80,6 +84,24 @@ class Session {
   detachLeg(role) {
     if (this.legs[role]) this.legs[role] = null;
     if (role === 'customer') this.hangup('customer_stream_stopped');
+    // If the manager hangs up after they've been bridged in, end the call.
+    if (role === 'rep' && this.mode === MODE.TAKEN_OVER) this.hangup('rep_hung_up');
+  }
+
+  // Dial the manager on demand (warm transfer) and attach them as the rep leg.
+  _dialManager() {
+    if (this._managerDialed || this.legs.rep) return;
+    if (!this.managerNumber || !this.twilioClient || !this.fromNumber) {
+      this.onLog('cannot dial manager (missing number/from)');
+      return;
+    }
+    this._managerDialed = true;
+    const base = `https://${process.env.PUBLIC_HOST}`;
+    this.onLog('dialing manager ' + this.managerNumber);
+    this.twilioClient.calls
+      .create({ to: this.managerNumber, from: this.fromNumber, url: `${base}/twilio/monitor?sid=${this.id}` })
+      .then((c) => (this.repCallSid = c.sid))
+      .catch((e) => this.onLog('manager dial error: ' + e.message));
   }
 
   onMedia(role, payloadB64) {
@@ -130,8 +152,9 @@ class Session {
         this._send('rep', pcmToMuLawB64(mixed));
       }
 
-      // Warm handoff: once the handoff line has fully played out, bridge you in.
-      if (this.handingOff && this.handoffAudioDone && this.aiQueue.length === 0) {
+      // Warm handoff: bridge once the handoff line has played out AND the manager
+      // has actually answered (their rep leg is connected).
+      if (this.handingOff && this.handoffAudioDone && this.aiQueue.length === 0 && this.legs.rep) {
         this._completeTakeover();
       }
     }, 20);
@@ -301,18 +324,21 @@ class Session {
     else this.fish.once('ready', leave);
   }
 
-  // ---- Warm Take Over ----
-  // Instead of cutting the AI dead, the agent says a natural handoff line
-  // ("…my manager just walked in, let me put them on…"), lets it finish playing,
-  // then the ticker bridges you (already on the monitor leg) to the customer.
+  // ---- Warm Take Over (dial-on-handoff / warm transfer) ----
+  // The agent says a natural handoff line, and IN PARALLEL we dial the manager.
+  // Once the line has played AND the manager has answered, we bridge them to the
+  // customer and drop the AI. If a manager leg is already present (monitor mode),
+  // we just bridge that one.
   takeOver() {
     if (this.mode === MODE.TAKEN_OVER || this.mode === MODE.DONE) return false;
     if (this.handingOff) return true; // already in progress
     if (this.mode !== MODE.ENGAGE || !this.fish) {
-      // Not in a live conversation (e.g. still connecting/voicemail) — bridge directly.
-      return this._completeTakeover();
+      // Not in a live conversation — bridge directly if a manager is already on.
+      if (this.legs.rep) return this._completeTakeover();
+      this._dialManager();
+      return true;
     }
-    this.onLog('WARM TAKEOVER: speaking handoff line');
+    this.onLog('WARM TAKEOVER: speaking handoff line + dialing manager');
     this.handingOff = true;
     this.handoffAudioDone = false;
 
@@ -322,8 +348,11 @@ class Session {
     this.aiQueue.clear();
     this._clear('customer');
 
+    // Dial the manager now (parallel with the line) unless one's already connected.
+    if (!this.legs.rep) this._dialManager();
+
     // Speak the handoff line; mark when all its audio has arrived. The ticker
-    // completes the bridge once that audio has finished playing to the customer.
+    // bridges once that audio is done AND the manager's leg is connected.
     this.acceptingAi = true;
     this.fish.once('finish', () => {
       this.handoffAudioDone = true;
@@ -332,10 +361,19 @@ class Session {
     this.fish.flush();
     this.fish.end(); // tells Fish no more text -> it sends the audio then 'finish'
 
-    // Safety net: bridge anyway if 'finish' never lands.
-    this._handoffTimer = setTimeout(() => {
+    // Safety net: mark audio done even if 'finish' never lands.
+    this._audioTimer = setTimeout(() => {
       this.handoffAudioDone = true;
     }, 12000);
+
+    // No-answer fallback: if the manager never picks up, don't leave the customer
+    // hanging — end the call. (A spoken "I'll have them call you back" can come later.)
+    this._handoffTimer = setTimeout(() => {
+      if (this.mode !== MODE.TAKEN_OVER && this.mode !== MODE.DONE) {
+        this.onLog('manager did not answer — ending call');
+        this.hangup('handoff_no_answer');
+      }
+    }, this.managerRingMs);
     return true;
   }
 
@@ -347,6 +385,7 @@ class Session {
     this.acceptingAi = false;
     this.aiQueue.clear();
     if (this._handoffTimer) clearTimeout(this._handoffTimer);
+    if (this._audioTimer) clearTimeout(this._audioTimer);
     if (this.stt) this.stt.close();
     if (this.fish) this.fish.close();
     this.stt = null;

@@ -82,11 +82,13 @@ app.post('/start-call', async (req, res) => {
 
     active = new Session({
       id,
+      from,
       script: req.body.script || '',
       leadContext: req.body.screenText || '',
       persona: req.body.persona || '',
       repName: req.body.repName || process.env.REP_NAME,
       handoffLine: req.body.handoffLine || process.env.HANDOFF_LINE,
+      managerNumber: req.body.managerNumber || process.env.MANAGER_NUMBER || process.env.REP_CELL,
       twilioClient: client,
       onLog: (m) => console.log(`[${id}] ${m}`),
     });
