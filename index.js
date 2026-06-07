@@ -85,6 +85,8 @@ app.post('/start-call', async (req, res) => {
       script: req.body.script || '',
       leadContext: req.body.screenText || '',
       persona: req.body.persona || '',
+      repName: req.body.repName || process.env.REP_NAME,
+      handoffLine: req.body.handoffLine || process.env.HANDOFF_LINE,
       twilioClient: client,
       onLog: (m) => console.log(`[${id}] ${m}`),
     });

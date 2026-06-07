@@ -93,6 +93,16 @@ class FishTTS extends EventEmitter {
     if (this.ready) this.ws.send(encode({ event: 'flush' }));
   }
 
+  // Signal end-of-stream: server synthesizes remaining text, streams the audio,
+  // emits 'finish', then closes. Unlike close(), we don't tear down the socket
+  // ourselves — so we still receive that final audio (used for the warm handoff).
+  end() {
+    this.closed = true;
+    try {
+      if (this.ready) this.ws.send(encode({ event: 'stop' }));
+    } catch {}
+  }
+
   close() {
     this.closed = true;
     try {

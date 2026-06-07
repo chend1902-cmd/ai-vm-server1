@@ -53,6 +53,16 @@ class Session {
     this.acceptingAi = false; // false during barge-in so late Fish audio is dropped
     this.ticker = null;
     this.greeted = false;
+
+    // Warm-takeover state. The agent says a handoff line, lets it finish playing,
+    // then bridges you in — as if a manager overheard and stepped in.
+    this.handingOff = false;
+    this.handoffAudioDone = false;
+    const repName = opts.repName || process.env.REP_NAME || 'my sales manager';
+    this.handoffLine =
+      opts.handoffLine ||
+      process.env.HANDOFF_LINE ||
+      `You know what — ${repName} just walked into my office, and ${repName} can probably help you out a little more on this. Let me put ${repName} on real quick, one second.`;
   }
 
   setCallSids(customerCallSid, repCallSid) {
@@ -119,6 +129,11 @@ class Session {
         for (let i = 0; i < FRAME_SAMPLES; i++) mixed[i] = mixSample(ai.samples[i], cust.samples[i]);
         this._send('rep', pcmToMuLawB64(mixed));
       }
+
+      // Warm handoff: once the handoff line has fully played out, bridge you in.
+      if (this.handingOff && this.handoffAudioDone && this.aiQueue.length === 0) {
+        this._completeTakeover();
+      }
     }, 20);
   }
 
@@ -166,6 +181,7 @@ class Session {
     this.stt.start();
 
     this.stt.on('speechStarted', () => {
+      if (this.handingOff || this.mode === MODE.TAKEN_OVER) return; // don't interrupt the handoff
       // Barge-in: stop the agent the instant the customer talks over it.
       if (this.aiQueue.length > 0 || (this.brain && this.brain.stream)) {
         this.acceptingAi = false;
@@ -177,6 +193,7 @@ class Session {
 
     let buffer = '';
     const fire = () => {
+      if (this.handingOff || this.mode === MODE.TAKEN_OVER) return; // agent is bowing out
       const said = buffer.trim();
       buffer = '';
       if (said) this._respond(said);
@@ -249,15 +266,52 @@ class Session {
     else this.fish.once('ready', leave);
   }
 
-  // ---- Take Over (you barge in from your cell) ----
+  // ---- Warm Take Over ----
+  // Instead of cutting the AI dead, the agent says a natural handoff line
+  // ("…my manager just walked in, let me put them on…"), lets it finish playing,
+  // then the ticker bridges you (already on the monitor leg) to the customer.
   takeOver() {
     if (this.mode === MODE.TAKEN_OVER || this.mode === MODE.DONE) return false;
-    this.onLog('TAKE OVER');
-    this.mode = MODE.TAKEN_OVER;
+    if (this.handingOff) return true; // already in progress
+    if (this.mode !== MODE.ENGAGE || !this.fish) {
+      // Not in a live conversation (e.g. still connecting/voicemail) — bridge directly.
+      return this._completeTakeover();
+    }
+    this.onLog('WARM TAKEOVER: speaking handoff line');
+    this.handingOff = true;
+    this.handoffAudioDone = false;
+
+    // Cut any in-progress agent turn so the handoff line plays cleanly.
+    if (this.brain) this.brain.abort();
     this.acceptingAi = false;
     this.aiQueue.clear();
     this._clear('customer');
-    if (this.brain) this.brain.abort();
+
+    // Speak the handoff line; mark when all its audio has arrived. The ticker
+    // completes the bridge once that audio has finished playing to the customer.
+    this.acceptingAi = true;
+    this.fish.once('finish', () => {
+      this.handoffAudioDone = true;
+    });
+    this.fish.pushText(this.handoffLine);
+    this.fish.flush();
+    this.fish.end(); // tells Fish no more text -> it sends the audio then 'finish'
+
+    // Safety net: bridge anyway if 'finish' never lands.
+    this._handoffTimer = setTimeout(() => {
+      this.handoffAudioDone = true;
+    }, 12000);
+    return true;
+  }
+
+  _completeTakeover() {
+    if (this.mode === MODE.TAKEN_OVER || this.mode === MODE.DONE) return false;
+    this.onLog('TAKE OVER complete — bridging you to the customer');
+    this.mode = MODE.TAKEN_OVER;
+    this.handingOff = false;
+    this.acceptingAi = false;
+    this.aiQueue.clear();
+    if (this._handoffTimer) clearTimeout(this._handoffTimer);
     if (this.stt) this.stt.close();
     if (this.fish) this.fish.close();
     this.stt = null;
