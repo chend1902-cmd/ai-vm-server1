@@ -196,10 +196,25 @@ app.get('/calls/:id', (req, res) => {
 
 // One active session at a time.
 let active = null;
+// Armed lead context for the next VinSolutions-initiated (inbound) call.
+let armed = null;
 const log = (m) => console.log(`[${active ? active.id : '-'}] ${m}`);
 
 // In-memory breakdown of the most recent calls (newest first).
 const callLogs = [];
+function pushCallLog(s, reason) {
+  callLogs.unshift({
+    id: s.id,
+    to: s.customerNumber,
+    from: s.fromNumber,
+    outcome: reason,
+    startedAt: new Date(s.startedAt).toISOString(),
+    durationMs: Date.now() - s.startedAt,
+    transcript: s.transcript,
+    emotionTags: s.transcript.flatMap((e) => e.tags),
+  });
+  while (callLogs.length > 25) callLogs.pop();
+}
 function callSummary(c) {
   return {
     id: c.id,
@@ -320,6 +335,62 @@ app.post('/twilio/outbound', (req, res) => {
 });
 app.post('/twilio/monitor', (req, res) => {
   res.type('text/xml').send(streamTwiml('rep', req.query.sid || ''));
+});
+
+// ---- Path A: VinSolutions click-to-call ----
+// The extension arms the lead context, then auto-clicks Dial in VinSolutions.
+// VinSolutions rings our Twilio number (set as the agent's dial number); that
+// number's Voice webhook points here.
+app.post('/arm', (req, res) => {
+  if (!requireSecret(req, res)) return;
+  armed = {
+    customerNumber: (req.body.customerNumber || '').trim(),
+    leadContext: req.body.screenText || req.body.leadContext || '',
+    script: req.body.script || '',
+    persona: req.body.persona || '',
+    repName: req.body.repName || '',
+    handoffLine: req.body.handoffLine || '',
+    armedAt: Date.now(),
+  };
+  res.json({ ok: true });
+});
+
+// Twilio Voice webhook for the AI agent's number. VinSolutions has already
+// dialed the customer and bridged us in, so we accept (press 1) and stream.
+app.post('/twilio/incoming', (req, res) => {
+  const id = 's' + Date.now();
+  const a = armed || {};
+  let from = null;
+  try { from = nextNumber(); } catch {}
+  active = new Session({
+    id,
+    from,
+    inbound: true,
+    customerNumber: a.customerNumber || req.body.To || null,
+    leadContext: a.leadContext || '',
+    script: a.script || '',
+    persona: a.persona || '',
+    repName: a.repName || process.env.REP_NAME,
+    handoffLine: a.handoffLine || process.env.HANDOFF_LINE,
+    managerNumber: a.managerNumber || process.env.MANAGER_NUMBER || process.env.REP_CELL,
+    twilioClient: client,
+    onLog: (m) => console.log(`[${id}] ${m}`),
+  });
+  active.onDone = (reason) => pushCallLog(active, reason);
+
+  const wsUrl = `wss://${PUBLIC_HOST}/media`;
+  const digits = process.env.CONNECT_DIGITS ?? 'ww1'; // press 1 to accept VinSolutions' connect prompt
+  const twiml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  ${digits ? `<Play digits="${digits}"/>` : ''}
+  <Connect>
+    <Stream url="${wsUrl}">
+      <Parameter name="role" value="customer"/>
+      <Parameter name="sid" value="${id}"/>
+    </Stream>
+  </Connect>
+</Response>`;
+  res.type('text/xml').send(twiml);
 });
 
 // ---- AMD callback: human vs machine ----

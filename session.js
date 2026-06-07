@@ -24,6 +24,7 @@ const {
 const { FishTTS } = require('./fish');
 const { DeepgramSTT } = require('./stt');
 const { Brain } = require('./brain');
+const { BeepDetector } = require('./beep');
 
 const MODE = { CONNECTING: 'connecting', ENGAGE: 'engage', VOICEMAIL: 'voicemail', TAKEN_OVER: 'taken_over', DONE: 'done' };
 
@@ -66,6 +67,12 @@ class Session {
     this.ticker = null;
     this.greeted = false;
 
+    // Inbound (VinSolutions click-to-call) mode: VinSolutions dials the customer
+    // and bridges us in, so there's no Twilio AMD — we detect voicemail by beep
+    // and greet on the customer's first words.
+    this.inbound = !!opts.inbound;
+    this.beep = null;
+
     // Per-call structured log (timestamped events + emotion tags).
     this.startedAt = Date.now();
     this.transcript = [];
@@ -105,6 +112,8 @@ class Session {
     this.legs[role] = { ws, streamSid };
     this._record('system', role === 'rep' ? 'manager_connected' : 'customer_connected');
     if (!this.ticker) this._startTicker();
+    // Inbound has no AMD — start the agent when the customer stream connects.
+    if (this.inbound && role === 'customer' && this.mode === MODE.CONNECTING) this._beginInbound();
   }
 
   detachLeg(role) {
@@ -133,6 +142,10 @@ class Session {
   onMedia(role, payloadB64) {
     const pcm = muLawB64ToPcm(payloadB64);
     if (role === 'customer') {
+      // Inbound: until a human speaks, listen for a voicemail beep to branch.
+      if (this.inbound && this.beep && !this.greeted && this.mode === MODE.ENGAGE) {
+        if (this.beep.pushBase64(payloadB64)) this._inboundVoicemail();
+      }
       // Feed STT (raw mu-law) when engaging; buffer PCM for the monitor mix.
       if (this.stt) this.stt.send(Buffer.from(payloadB64, 'base64'));
       this.custQueue.push(pcm);
@@ -222,9 +235,31 @@ class Session {
   }
 
   // ---- Live conversation (human answered) ----
-  _beginEngage() {
+  // Inbound (Path A): start engaging but defer the greeting until the customer
+  // speaks (or a fallback timer), and run beep detection for voicemail.
+  _beginInbound() {
+    this.beep = new BeepDetector();
+    this._beginEngage({ deferGreet: true });
+    this._greetTimer = setTimeout(() => {
+      if (!this.greeted && this.mode === MODE.ENGAGE) {
+        this.greeted = true;
+        this._turn((onTok) => this.brain.greet(onTok));
+      }
+    }, Number(process.env.INBOUND_GREET_FALLBACK_MS || 6000));
+  }
+
+  _inboundVoicemail() {
+    if (this.mode !== MODE.ENGAGE || this.greeted) return;
+    this.greeted = true; // stop the greet path
+    if (this._greetTimer) clearTimeout(this._greetTimer);
+    if (this.stt) { this.stt.close(); this.stt = null; }
+    this.brain = null;
+    this._beginVoicemail(); // reuses this.fish if already connected
+  }
+
+  _beginEngage(opts = {}) {
     this.mode = MODE.ENGAGE;
-    this._startFish();
+    if (!this.fish) this._startFish();
 
     this.stt = new DeepgramSTT();
     this.stt.start();
@@ -246,6 +281,14 @@ class Session {
       if (this.handingOff || this.mode === MODE.TAKEN_OVER) return; // agent is bowing out
       const said = buffer.trim();
       buffer = '';
+      // Inbound: the customer's first words = a human answered -> greet, don't reply.
+      if (this.inbound && !this.greeted) {
+        this.greeted = true;
+        if (this._greetTimer) clearTimeout(this._greetTimer);
+        this.beep = null; // human confirmed; stop beep detection
+        this._turn((onTok) => this.brain.greet(onTok));
+        return;
+      }
       if (said) this._respond(said);
     };
     this.stt.on('transcript', (text, isFinal, speechFinal) => {
@@ -259,14 +302,17 @@ class Session {
 
     this.brain = new Brain({ persona: this.persona, script: this.script, leadContext: this.leadContext });
 
-    // Open the conversation once Fish is ready.
+    // Open the conversation once Fish is ready (outbound greets immediately;
+    // inbound defers until the customer speaks — see fire()).
     const openGreeting = () => {
       if (this.greeted) return;
       this.greeted = true;
       this._turn((onTok) => this.brain.greet(onTok));
     };
-    if (this.fish.ready) openGreeting();
-    else this.fish.once('ready', openGreeting);
+    if (!opts.deferGreet) {
+      if (this.fish.ready) openGreeting();
+      else this.fish.once('ready', openGreeting);
+    }
   }
 
   _respond(customerText) {
@@ -338,7 +384,7 @@ class Session {
   // ---- Voicemail branch (machine answered) ----
   _beginVoicemail() {
     this.mode = MODE.VOICEMAIL;
-    this._startFish();
+    if (!this.fish) this._startFish();
     const msg = this.script || 'Hi, just following up with you. Give us a call back when you get a chance. Thanks!';
     const leave = () => {
       this.acceptingAi = true;
