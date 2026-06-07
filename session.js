@@ -345,6 +345,12 @@ class Session {
         if (!force) return;
         if (/\[\[\s*HANDOFF/i.test(pending)) return; // confirmed handoff; don't speak it
       }
+      // The model keeps gluing the ask onto a preamble with a spaced dash
+      // ("Come see it — tomorrow, or Saturday?"), which makes Fish render it as one
+      // breath and flattens the question. Force a real sentence break so the ask
+      // becomes its own Fish segment with a clean rising contour — deterministic,
+      // regardless of whether the model obeyed the no-em-dash rule.
+      pending = pending.replace(/\s+[—–]\s+/g, '. ').replace(/ - /g, '. ');
       // Drain complete clauses first (so the opening goes out as soon as possible).
       let m;
       while ((m = pending.match(/^([\s\S]*?[.!?,;:])\s+/))) {
