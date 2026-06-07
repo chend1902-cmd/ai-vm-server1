@@ -115,7 +115,10 @@ app.post('/start-call', async (req, res) => {
     });
 
     let repCall = null;
-    if (REP_CELL) {
+    // Monitor leg is on by default; pass {"monitor": false} to skip it (handy while
+    // iterating on the agent so your cell doesn't ring and we save a concurrency slot).
+    const wantMonitor = req.body.monitor !== false && String(req.body.monitor) !== 'false';
+    if (REP_CELL && wantMonitor) {
       repCall = await client.calls.create({
         to: REP_CELL,
         from,
