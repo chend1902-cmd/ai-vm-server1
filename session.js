@@ -180,9 +180,23 @@ class Session {
         return;
       }
 
-      // Engage / voicemail: AI talks to the customer.
-      const ai = this.aiQueue.read(FRAME_SAMPLES);
-      if (ai.filled) this._send('customer', pcmToMuLawB64(ai.samples));
+      // Engage / voicemail: AI talks to the customer — with a jitter buffer so
+      // bursty Fish delivery doesn't underrun the 20ms clock (the choppiness fix).
+      // Wait until ~150ms is buffered before starting a burst; ride through brief
+      // gaps; only re-arm after sustained silence (turn finished).
+      if (this._aiBuffering === undefined) { this._aiBuffering = true; this._aiEmptyTicks = 0; }
+      const PREBUFFER = 1200; // samples (~150ms at 8kHz)
+      if (this._aiBuffering && this.aiQueue.length >= PREBUFFER) { this._aiBuffering = false; this._aiEmptyTicks = 0; }
+      let ai = { filled: 0, samples: new Int16Array(FRAME_SAMPLES) };
+      if (!this._aiBuffering) {
+        ai = this.aiQueue.read(FRAME_SAMPLES);
+        if (ai.filled) {
+          this._send('customer', pcmToMuLawB64(ai.samples));
+          this._aiEmptyTicks = 0;
+        } else if (++this._aiEmptyTicks > 10) {
+          this._aiBuffering = true; // ~200ms of silence -> burst done, re-arm
+        }
+      }
 
       // Monitor: rep hears AI + customer mixed (only while a rep leg is attached).
       if (this.legs.rep) {
