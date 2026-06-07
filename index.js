@@ -284,7 +284,10 @@ app.post('/hangup', (req, res) => {
 
 // ---- Media-stream WebSocket: route frames to the active session by role ----
 const server = http.createServer(app);
-const wss = new WebSocketServer({ server, path: '/media' });
+// Both sockets use noServer + manual upgrade routing. Attaching two
+// WebSocketServers to one HTTP server via the `path` option makes the first one
+// abort the other's upgrades with 400 — which silently broke /sim-ws.
+const wss = new WebSocketServer({ noServer: true });
 
 wss.on('connection', (ws) => {
   let role = null;
@@ -321,7 +324,21 @@ wss.on('connection', (ws) => {
 // ---- Simulator WebSocket: drives the real Brain + Fish voice in the browser,
 // so you can iterate on the agent (persona, wording, emotion tags, handoff)
 // without placing a phone call. Customer turns come as typed text from /sim. ----
-const simWss = new WebSocketServer({ server, path: '/sim-ws' });
+const simWss = new WebSocketServer({ noServer: true });
+
+// Route WebSocket upgrades to the right server by path.
+server.on('upgrade', (req, socket, head) => {
+  let pathname = req.url || '';
+  const q = pathname.indexOf('?');
+  if (q !== -1) pathname = pathname.slice(0, q);
+  if (pathname === '/media') {
+    wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
+  } else if (pathname === '/sim-ws') {
+    simWss.handleUpgrade(req, socket, head, (ws) => simWss.emit('connection', ws, req));
+  } else {
+    socket.destroy();
+  }
+});
 
 simWss.on('connection', (ws) => {
   let brain = null;
