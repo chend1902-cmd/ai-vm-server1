@@ -27,6 +27,8 @@
   button { border:none; border-radius:8px; padding:10px 14px; font-size:13px; font-weight:600; cursor:pointer; }
   #start { background:#16a34a; color:#fff; }
   #send { background:#2563eb; color:#fff; }
+  #mic { background:#0891b2; color:#fff; }
+  #mic.on { background:#dc2626; }
   #handoff { background:#dc2626; color:#fff; }
   #reset { background:#334155; color:#fff; }
   button:disabled { opacity:.5; cursor:default; }
@@ -46,6 +48,7 @@
       <button id="start">▶ Start call</button>
       <input id="text" type="text" placeholder="Type what the customer says… (Enter to send)" disabled />
       <button id="send" disabled>Send</button>
+      <button id="mic" disabled>🎙 Talk</button>
       <button id="handoff" disabled>🎤 Take over</button>
       <button id="reset">↺ Reset</button>
     </div>
@@ -137,9 +140,50 @@ function ensureAudio(){
 $('start').onclick = () => {
   ensureAudio();
   if (!ws || ws.readyState!==1) connect();
-  const go = () => { ws.send(JSON.stringify({type:'start'})); started=true; $('text').disabled=false; $('send').disabled=false; $('handoff').disabled=false; $('text').focus(); };
+  const go = () => { ws.send(JSON.stringify({type:'start'})); started=true; $('text').disabled=false; $('send').disabled=false; $('handoff').disabled=false; $('mic').disabled=false; $('text').focus(); };
   if (ws.readyState===1) go(); else ws.addEventListener('open', go, {once:true});
 };
+
+// ---- mic capture: stream linear16 16k PCM to the server (half-duplex) ----
+let micOn = false, micStream = null, micSource = null, micNode = null, micSilent = null;
+function agentSpeaking(){ return audioCtx && (audioCtx.currentTime < nextTime - 0.05); }
+function resampleTo16k(float32, inRate){
+  const ratio = inRate / 16000;
+  const out = new Int16Array(Math.floor(float32.length / ratio));
+  for (let i=0;i<out.length;i++){
+    const v = float32[Math.floor(i*ratio)] || 0;
+    out[i] = Math.max(-32768, Math.min(32767, v*32768));
+  }
+  return out;
+}
+async function micToggle(){
+  if (micOn){ stopMic(); return; }
+  ensureAudio();
+  try {
+    micStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation:true, noiseSuppression:true, autoGainControl:true } });
+  } catch(e){ addMsg('sys','mic blocked: '+e.message); return; }
+  ws.send(JSON.stringify({type:'mic_start'}));
+  micSource = audioCtx.createMediaStreamSource(micStream);
+  micNode = audioCtx.createScriptProcessor(4096, 1, 1);
+  micSilent = audioCtx.createGain(); micSilent.gain.value = 0; // don't echo mic to speakers
+  micNode.onaudioprocess = (e) => {
+    if (!micOn || !ws || ws.readyState!==1) return;
+    if (agentSpeaking()) return; // half-duplex: don't capture while agent talks
+    const pcm = resampleTo16k(e.inputBuffer.getChannelData(0), audioCtx.sampleRate);
+    ws.send(pcm.buffer);
+  };
+  micSource.connect(micNode); micNode.connect(micSilent); micSilent.connect(audioCtx.destination);
+  micOn = true; $('mic').textContent='⏹ Stop mic'; $('mic').classList.add('on');
+  addMsg('sys','🎙 mic on — speak after the agent finishes (use headphones to avoid echo)');
+}
+function stopMic(){
+  micOn = false; $('mic').textContent='🎙 Talk'; $('mic').classList.remove('on');
+  try { ws.send(JSON.stringify({type:'mic_stop'})); } catch{}
+  try { micNode.disconnect(); micSource.disconnect(); micSilent.disconnect(); } catch{}
+  try { micStream.getTracks().forEach(t=>t.stop()); } catch{}
+  micStream=micSource=micNode=micSilent=null;
+}
+$('mic').onclick = micToggle;
 function sendText(){
   const t = $('text').value.trim(); if (!t || !started) return;
   ws.send(JSON.stringify({type:'say', text:t}));
@@ -148,7 +192,7 @@ function sendText(){
 $('send').onclick = sendText;
 $('text').addEventListener('keydown', (e)=>{ if(e.key==='Enter') sendText(); });
 $('handoff').onclick = () => { ensureAudio(); if(ws&&ws.readyState===1) ws.send(JSON.stringify({type:'handoff'})); };
-$('reset').onclick = () => { if(ws&&ws.readyState===1) ws.send(JSON.stringify({type:'reset'})); started=false; $('text').disabled=true; $('send').disabled=true; $('handoff').disabled=true; nextTime=0; };
+$('reset').onclick = () => { if(micOn) stopMic(); if(ws&&ws.readyState===1) ws.send(JSON.stringify({type:'reset'})); started=false; $('text').disabled=true; $('send').disabled=true; $('handoff').disabled=true; $('mic').disabled=true; nextTime=0; };
 
 connect();
 </script>

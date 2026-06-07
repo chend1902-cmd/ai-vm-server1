@@ -15,6 +15,9 @@ class DeepgramSTT extends EventEmitter {
     super();
     this.client = createClient(opts.apiKey || process.env.DEEPGRAM_API_KEY);
     this.model = opts.model || process.env.DEEPGRAM_MODEL || 'nova-2-phonecall';
+    // Twilio sends mu-law 8k; the browser sim sends linear16 16k.
+    this.encoding = opts.encoding || 'mulaw';
+    this.sampleRate = opts.sampleRate || 8000;
     this.conn = null;
     this.ready = false;
   }
@@ -22,8 +25,8 @@ class DeepgramSTT extends EventEmitter {
   start() {
     this.conn = this.client.listen.live({
       model: this.model,
-      encoding: 'mulaw',
-      sample_rate: 8000,
+      encoding: this.encoding,
+      sample_rate: this.sampleRate,
       channels: 1,
       interim_results: true,
       smart_format: true,

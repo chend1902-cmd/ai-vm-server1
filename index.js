@@ -22,6 +22,7 @@ const { Session } = require('./session');
 const { nextNumber } = require('./numbers');
 const { Brain } = require('./brain');
 const { FishTTS } = require('./fish');
+const { DeepgramSTT } = require('./stt');
 
 function simTags(text) {
   const out = [];
@@ -300,6 +301,9 @@ const simWss = new WebSocketServer({ server, path: '/sim-ws' });
 simWss.on('connection', (ws) => {
   let brain = null;
   let fish = null;
+  let stt = null;
+  let turning = false; // a turn is generating/speaking
+  let micBuffer = '';
   const send = (obj) => { try { ws.send(JSON.stringify(obj)); } catch {} };
 
   const ensureFish = () => {
@@ -312,21 +316,49 @@ simWss.on('connection', (ws) => {
   };
 
   const turn = async (producer) => {
+    turning = true;
     let full = '';
     try {
       await producer((tok) => { full += tok; send({ type: 'agent_token', text: tok }); });
     } catch (e) {
       send({ type: 'log', text: 'brain error: ' + e.message });
+      turning = false;
       return;
     }
-    if (/\[\[\s*HANDOFF/i.test(full)) { send({ type: 'handoff' }); return; }
+    if (/\[\[\s*HANDOFF/i.test(full)) { send({ type: 'handoff' }); turning = false; return; }
     ensureFish();
     fish.pushText(full);
     fish.flush();
     send({ type: 'agent_done', text: full, tags: simTags(full) });
+    turning = false;
+  };
+
+  // Mic mode: browser streams linear16 16k PCM; Deepgram detects end-of-turn.
+  const startMic = () => {
+    if (stt) return;
+    if (!brain) brain = new Brain({ leadContext: 'Internet lead.' });
+    stt = new DeepgramSTT({ encoding: 'linear16', sampleRate: 16000 });
+    stt.start();
+    const fire = () => {
+      const said = micBuffer.trim();
+      micBuffer = '';
+      if (said && !turning) { send({ type: 'customer', text: said }); turn((t) => brain.respond(said, t)); }
+    };
+    stt.on('transcript', (text, isFinal, speechFinal) => {
+      if (isFinal && text) micBuffer += (micBuffer ? ' ' : '') + text;
+      if (speechFinal) fire();
+    });
+    stt.on('utteranceEnd', () => fire());
+    stt.on('error', (e) => send({ type: 'log', text: 'stt error: ' + e.message }));
+    send({ type: 'mic_ready' });
   };
 
   ws.on('message', async (raw) => {
+    // Binary frames = mic PCM (linear16 16k) -> Deepgram.
+    if (Buffer.isBuffer(raw) || raw instanceof ArrayBuffer) {
+      if (stt) stt.send(Buffer.from(raw));
+      return;
+    }
     let msg;
     try { msg = JSON.parse(raw.toString()); } catch { return; }
     if (msg.type === 'start') {
@@ -340,16 +372,20 @@ simWss.on('connection', (ws) => {
       if (!brain) brain = new Brain({ leadContext: 'Internet lead.' });
       send({ type: 'customer', text: msg.text });
       await turn((onTok) => brain.respond(msg.text, onTok));
+    } else if (msg.type === 'mic_start') {
+      startMic();
+    } else if (msg.type === 'mic_stop') {
+      if (stt) { stt.close(); stt = null; }
     } else if (msg.type === 'handoff') {
-      // Simulate the agent being told to hand off (manual takeover).
       send({ type: 'handoff' });
     } else if (msg.type === 'reset') {
       brain = null;
+      micBuffer = '';
       send({ type: 'reset_ok' });
     }
   });
 
-  ws.on('close', () => { if (fish) fish.close(); brain = null; });
+  ws.on('close', () => { if (fish) fish.close(); if (stt) stt.close(); brain = null; });
 });
 
 server.listen(PORT, () => console.log(`listening on ${PORT}`));
