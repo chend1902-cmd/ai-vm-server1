@@ -23,6 +23,10 @@ const { nextNumber } = require('./numbers');
 const { Brain } = require('./brain');
 const { FishTTS } = require('./fish');
 const { DeepgramSTT } = require('./stt');
+const multer = require('multer');
+const Anthropic = require('@anthropic-ai/sdk');
+const { createClient: createDeepgram } = require('@deepgram/sdk');
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 30 * 1024 * 1024 } });
 
 function simTags(text) {
   const out = [];
@@ -57,6 +61,26 @@ const SCENARIOS = {
       'OUTBOUND CALL — Appointment confirmation. The customer has an UPCOMING appointment (tomorrow) to see a 2021 Honda Accord. OBJECTIVE: confirm they are still planning to come in, lock in the exact time, build a little excitement. Keep it short.',
   },
 };
+
+// ---- Style references: drop rep call clips at /sim; we transcribe them and
+// distill a style guide the agent emulates (cadence/phrasing/energy). ----
+const styleRefs = []; // { name, transcript }
+let styleGuidance = '';
+const dgClient = process.env.DEEPGRAM_API_KEY ? createDeepgram(process.env.DEEPGRAM_API_KEY) : null;
+const anthropic = process.env.ANTHROPIC_API_KEY ? new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY }) : null;
+
+async function distillStyle() {
+  if (!anthropic || !styleRefs.length) { styleGuidance = ''; return; }
+  const corpus = styleRefs.map((r, i) => `--- Clip ${i + 1} (${r.name}) ---\n${r.transcript}`).join('\n\n');
+  const resp = await anthropic.messages.create({
+    model: process.env.LLM_MODEL || 'claude-haiku-4-5',
+    max_tokens: 700,
+    system:
+      'You are a phone-sales coach. Given transcripts of real reps on live calls, write a SHORT, concrete style guide (tight bullet points) capturing HOW they talk: cadence, sentence length, openers, transitions, word choice, energy, humor, and how they ask for the appointment. Capture the style, not the specific deals. Make it directly usable as instructions for another rep to match their delivery.',
+    messages: [{ role: 'user', content: `Transcripts:\n\n${corpus}\n\nWrite the style guide.` }],
+  });
+  styleGuidance = (resp.content.find((b) => b.type === 'text') || {}).text || '';
+}
 
 const {
   PORT = 3000,
@@ -95,6 +119,43 @@ app.get('/', (_req, res) => res.send('AI voice-agent server up'));
 
 // ---- Call simulator UI (no Twilio, no phone) ----
 app.get('/sim', (_req, res) => res.sendFile(path.join(__dirname, 'sim.html')));
+
+// Upload rep call clips (wav/mp3) -> transcribe -> distill a style guide.
+app.post('/sim-upload', upload.array('clip', 10), async (req, res) => {
+  if (!dgClient) return res.status(400).json({ ok: false, error: 'Deepgram not configured' });
+  try {
+    const added = [];
+    for (const f of req.files || []) {
+      const { result, error } = await dgClient.listen.prerecorded.transcribeFile(f.buffer, {
+        model: 'nova-2',
+        smart_format: true,
+      });
+      if (error) throw new Error(error.message || 'transcription failed');
+      const transcript =
+        (result && result.results && result.results.channels[0].alternatives[0].transcript) || '';
+      styleRefs.push({ name: f.originalname, transcript });
+      added.push({ name: f.originalname, transcript });
+    }
+    await distillStyle();
+    res.json({ ok: true, added, count: styleRefs.length, guidance: styleGuidance });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+app.get('/sim-style', (_req, res) =>
+  res.json({
+    count: styleRefs.length,
+    refs: styleRefs.map((r) => ({ name: r.name, chars: r.transcript.length })),
+    guidance: styleGuidance,
+  })
+);
+
+app.post('/sim-style/clear', (_req, res) => {
+  styleRefs.length = 0;
+  styleGuidance = '';
+  res.json({ ok: true });
+});
 
 // ---- Call breakdown / logs ----
 // GET /calls            -> list recent calls (+ the live one)
@@ -409,9 +470,10 @@ simWss.on('connection', (ws) => {
       brain = new Brain({
         leadContext:
           (sc && sc.leadContext) || msg.leadContext || 'Internet lead interested in a vehicle; has not been into the store yet.',
+        styleGuidance: styleGuidance || undefined,
       });
       ensureFish();
-      send({ type: 'started', scenario: sc ? sc.label : 'Custom' });
+      send({ type: 'started', scenario: sc ? sc.label : 'Custom', styleRefs: styleRefs.length });
       await turn((onTok) => brain.greet(onTok));
     } else if (msg.type === 'say') {
       if (!brain) brain = new Brain({ leadContext: 'Internet lead.' });

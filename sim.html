@@ -37,6 +37,8 @@
   #breakdown .flagline { color:#ffd166; font-weight:600; }
   #copyflags { background:#a16207; color:#fff; }
   .hint { font-size:11px; color:#7d8db0; padding:6px 14px 0; }
+  #uploadzone { margin:10px 14px 2px; padding:14px; border:1.5px dashed #2a3a66; border-radius:10px; text-align:center; font-size:12px; color:#8aa0c6; cursor:pointer; }
+  #uploadzone.drag { border-color:#16a34a; color:#cbeacb; background:#10261a; }
   body.flash { box-shadow: inset 0 0 0 4px #ffd166; transition: box-shadow .05s; }
 </style>
 </head>
@@ -67,7 +69,10 @@
     <div class="hint">Press <b>SPACE</b> anytime you hear an off cadence or wrong phrase — it flags the exact spot in the agent's audio (don't have the text box focused). ⚑ flags show on the right.</div>
   </div>
   <div class="col log">
-    <h2>Breakdown + emotion tags + ⚑ flags</h2>
+    <h2>Style references + breakdown + ⚑ flags</h2>
+    <div id="uploadzone">⬆ Drop rep call clips (.wav / .mp3) here — or click. We transcribe them and tailor the agent's cadence &amp; phrasing.</div>
+    <input id="fileinput" type="file" accept=".wav,.mp3,audio/*" multiple style="display:none" />
+    <div id="uploadstatus" class="hint"></div>
     <div id="breakdown"></div>
   </div>
 </div>
@@ -255,6 +260,26 @@ $('copyflags').onclick = async () => {
   catch { addBreak('--- FLAGS (copy manually) ---\n'+txt); }
 };
 $('reset').onclick = () => { if(micOn) stopMic(); if(ws&&ws.readyState===1) ws.send(JSON.stringify({type:'reset'})); started=false; $('text').disabled=true; $('send').disabled=true; $('handoff').disabled=true; $('mic').disabled=true; nextTime=0; };
+
+// ---- upload rep call clips -> server transcribes + distills style ----
+const uploadzone = $('uploadzone'), fileinput = $('fileinput'), uploadstatus = $('uploadstatus');
+uploadzone.onclick = () => fileinput.click();
+fileinput.onchange = () => { if (fileinput.files.length) uploadFiles(fileinput.files); fileinput.value=''; };
+['dragover','dragenter'].forEach(ev => uploadzone.addEventListener(ev, e => { e.preventDefault(); uploadzone.classList.add('drag'); }));
+['dragleave','dragend'].forEach(ev => uploadzone.addEventListener(ev, e => { e.preventDefault(); uploadzone.classList.remove('drag'); }));
+uploadzone.addEventListener('drop', e => { e.preventDefault(); uploadzone.classList.remove('drag'); if (e.dataTransfer.files.length) uploadFiles(e.dataTransfer.files); });
+async function uploadFiles(files){
+  const fd = new FormData(); [...files].forEach(f => fd.append('clip', f));
+  uploadstatus.textContent = '⏳ transcribing ' + files.length + ' clip(s)…';
+  try {
+    const r = await fetch('/sim-upload', { method:'POST', body: fd });
+    const j = await r.json();
+    if (!j.ok) { uploadstatus.textContent = 'upload error: ' + (j.error||'unknown'); return; }
+    uploadstatus.textContent = '✓ ' + j.count + ' clip(s) in style set — applies on next ▶ Start call';
+    (j.added||[]).forEach(a => addBreak('style+ ' + a.name + ': "' + (a.transcript||'').slice(0,90) + '…"'));
+    if (j.guidance) addBreak('--- DISTILLED STYLE GUIDE ---\n' + j.guidance.slice(0,800));
+  } catch(e){ uploadstatus.textContent = 'upload failed: ' + e.message; }
+}
 
 connect();
 </script>
