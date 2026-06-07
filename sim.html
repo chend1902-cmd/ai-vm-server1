@@ -24,6 +24,7 @@
   .tag { display:inline-block; background:#3a2b5e; color:#d9c7ff; border-radius:6px; padding:0 6px; font-size:11px; margin-right:4px; }
   .controls { padding:12px 14px; border-top:1px solid #1e2b50; display:flex; gap:8px; flex-wrap:wrap; }
   input[type=text] { flex:1; min-width:160px; background:#fff; color:#0b1020; border:none; border-radius:8px; padding:10px; font-size:14px; }
+  select { background:#1b2547; color:#e7ecf5; border:1px solid #2a3a66; border-radius:8px; padding:10px; font-size:13px; }
   button { border:none; border-radius:8px; padding:10px 14px; font-size:13px; font-weight:600; cursor:pointer; }
   #start { background:#16a34a; color:#fff; }
   #send { background:#2563eb; color:#fff; }
@@ -45,6 +46,12 @@
     <h2>Conversation (you = customer)</h2>
     <div id="transcript"></div>
     <div class="controls">
+      <select id="scenario" title="Call scenario">
+        <option value="internet_lead">Internet Lead</option>
+        <option value="missed_appointment">Missed Appointment</option>
+        <option value="showroom_visit">Showroom Visit Follow-up</option>
+        <option value="confirm_appointment">Confirm Appointment</option>
+      </select>
       <button id="start">▶ Start call</button>
       <input id="text" type="text" placeholder="Type what the customer says… (Enter to send)" disabled />
       <button id="send" disabled>Send</button>
@@ -105,7 +112,7 @@ function connect(){
   ws.onmessage = (ev) => {
     if (ev.data instanceof ArrayBuffer) { playPcm(ev.data); return; }
     const m = JSON.parse(ev.data);
-    if (m.type === 'started') { addBreak(ts()+'system.call_started'); }
+    if (m.type === 'started') { addMsg('sys','— '+(m.scenario||'call')+' started —'); addBreak(ts()+'system.call_started: '+(m.scenario||'')); }
     else if (m.type === 'customer') { addBreak(ts()+'customer.said: '+m.text); }
     else if (m.type === 'agent_token') {
       if (!curAgentEl) { curAgentEl = addMsg('agent',''); curAgentText=''; }
@@ -140,7 +147,7 @@ function ensureAudio(){
 $('start').onclick = () => {
   ensureAudio();
   if (!ws || ws.readyState!==1) connect();
-  const go = () => { ws.send(JSON.stringify({type:'start'})); started=true; $('text').disabled=false; $('send').disabled=false; $('handoff').disabled=false; $('mic').disabled=false; $('text').focus(); };
+  const go = () => { ws.send(JSON.stringify({type:'start', scenario: $('scenario').value})); started=true; $('text').disabled=false; $('send').disabled=false; $('handoff').disabled=false; $('mic').disabled=false; $('text').focus(); };
   if (ws.readyState===1) go(); else ws.addEventListener('open', go, {once:true});
 };
 

@@ -33,6 +33,31 @@ function simTags(text) {
   return out;
 }
 
+// Practice scenarios for the simulator. Each gives the agent the call's situation
+// and the specific objective so it opens and behaves appropriately.
+const SCENARIOS = {
+  internet_lead: {
+    label: 'Outbound — Internet Lead',
+    leadContext:
+      'OUTBOUND CALL — Fresh internet lead. The customer submitted an online inquiry on a 2021 Honda Accord EX-L. They have not been into the store and have not spoken with anyone yet. OBJECTIVE: introduce yourself briefly, confirm their interest, and set a specific appointment time for them to come see the vehicle.',
+  },
+  missed_appointment: {
+    label: 'Outbound — Missed Appointment',
+    leadContext:
+      'OUTBOUND CALL — Missed-appointment follow-up. The customer had a scheduled appointment to look at a 2021 Honda Accord and did NOT show up. OBJECTIVE: no guilt trip — warmly find out what came up and reschedule a specific new appointment time.',
+  },
+  showroom_visit: {
+    label: 'Outbound — Showroom Visit Follow-up',
+    leadContext:
+      'OUTBOUND CALL — Showroom visit follow-up (be-back). The customer came into the store and looked at a 2021 Honda Accord but left without buying. OBJECTIVE: thank them for coming in, surface and address any hesitation, and get them back in to move forward.',
+  },
+  confirm_appointment: {
+    label: 'Outbound — Confirm Appointment',
+    leadContext:
+      'OUTBOUND CALL — Appointment confirmation. The customer has an UPCOMING appointment (tomorrow) to see a 2021 Honda Accord. OBJECTIVE: confirm they are still planning to come in, lock in the exact time, build a little excitement. Keep it short.',
+  },
+};
+
 const {
   PORT = 3000,
   PUBLIC_HOST, // e.g. ai-vm-server.onrender.com (no scheme)
@@ -362,11 +387,13 @@ simWss.on('connection', (ws) => {
     let msg;
     try { msg = JSON.parse(raw.toString()); } catch { return; }
     if (msg.type === 'start') {
+      const sc = SCENARIOS[msg.scenario];
       brain = new Brain({
-        leadContext: msg.leadContext || 'Internet lead interested in a vehicle; has not been into the store yet.',
+        leadContext:
+          (sc && sc.leadContext) || msg.leadContext || 'Internet lead interested in a vehicle; has not been into the store yet.',
       });
       ensureFish();
-      send({ type: 'started' });
+      send({ type: 'started', scenario: sc ? sc.label : 'Custom' });
       await turn((onTok) => brain.greet(onTok));
     } else if (msg.type === 'say') {
       if (!brain) brain = new Brain({ leadContext: 'Internet lead.' });
