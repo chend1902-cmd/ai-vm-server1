@@ -66,7 +66,7 @@ class Session {
     this.handoffLine =
       opts.handoffLine ||
       process.env.HANDOFF_LINE ||
-      `You know what — ${repName} just walked into my office, and ${repName} can probably help you out a little more on this. Let me put ${repName} on real quick, one second.`;
+      `${repName} just walked into my office, and ${repName} can take better care of you on this. Let me put ${repName} on real quick — one second.`;
   }
 
   setCallSids(customerCallSid, repCallSid) {
