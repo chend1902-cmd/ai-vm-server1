@@ -55,9 +55,60 @@ app.use(express.json());
 
 app.get('/', (_req, res) => res.send('AI voice-agent server up'));
 
+// ---- Call breakdown / logs ----
+// GET /calls            -> list recent calls (+ the live one)
+// GET /calls/:id        -> full timestamped breakdown w/ emotion tags (JSON)
+// GET /calls/:id?text=1 -> human-readable transcript
+app.get('/calls', (_req, res) => {
+  const list = [];
+  if (active && active.mode !== 'done') {
+    list.push({ id: active.id, to: active.customerNumber, status: active.mode, turns: active.transcript.length, live: true });
+  }
+  list.push(...callLogs.map(callSummary));
+  res.json(list);
+});
+
+app.get('/calls/:id', (req, res) => {
+  let c = callLogs.find((x) => x.id === req.params.id);
+  if (!c && active && active.id === req.params.id) {
+    c = {
+      id: active.id,
+      to: active.customerNumber,
+      from: active.fromNumber,
+      status: active.mode,
+      live: true,
+      durationMs: Date.now() - active.startedAt,
+      transcript: active.transcript,
+      emotionTags: active.transcript.flatMap((e) => e.tags),
+    };
+  }
+  if (!c) return res.status(404).json({ error: 'not found' });
+  if (req.query.text) {
+    const lines = c.transcript.map(
+      (e) => `[${(e.at / 1000).toFixed(1)}s] ${e.role}.${e.type}${e.text ? ': ' + e.text : ''}${e.tags.length ? '  ⟨emotion: ' + e.tags.join(' ') + '⟩' : ''}`
+    );
+    return res.type('text/plain').send(lines.join('\n'));
+  }
+  res.json(c);
+});
+
 // One active session at a time.
 let active = null;
 const log = (m) => console.log(`[${active ? active.id : '-'}] ${m}`);
+
+// In-memory breakdown of the most recent calls (newest first).
+const callLogs = [];
+function callSummary(c) {
+  return {
+    id: c.id,
+    to: c.to,
+    from: c.from,
+    outcome: c.outcome,
+    turns: c.transcript.length,
+    emotionTags: c.emotionTags.length,
+    durationSec: Math.round(c.durationMs / 1000),
+  };
+}
 
 function requireSecret(req, res) {
   if (SHARED_SECRET && req.body.secret !== SHARED_SECRET) {
@@ -83,6 +134,7 @@ app.post('/start-call', async (req, res) => {
     active = new Session({
       id,
       from,
+      customerNumber,
       script: req.body.script || '',
       leadContext: req.body.screenText || '',
       persona: req.body.persona || '',
@@ -93,6 +145,19 @@ app.post('/start-call', async (req, res) => {
       onLog: (m) => console.log(`[${id}] ${m}`),
     });
     active.onDone = (reason) => {
+      // Snapshot the full call breakdown for retrieval via /calls.
+      const s = active;
+      callLogs.unshift({
+        id: s.id,
+        to: s.customerNumber,
+        from: s.fromNumber,
+        outcome: reason,
+        startedAt: new Date(s.startedAt).toISOString(),
+        durationMs: Date.now() - s.startedAt,
+        transcript: s.transcript,
+        emotionTags: s.transcript.flatMap((e) => e.tags),
+      });
+      while (callLogs.length > 25) callLogs.pop();
       if (pool) {
         pool
           .query(`INSERT INTO calls (session_id, customer_call_sid, outcome, script) VALUES ($1,$2,$3,$4)`, [

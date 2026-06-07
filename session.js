@@ -27,6 +27,18 @@ const { Brain } = require('./brain');
 
 const MODE = { CONNECTING: 'connecting', ENGAGE: 'engage', VOICEMAIL: 'voicemail', TAKEN_OVER: 'taken_over', DONE: 'done' };
 
+// Pull emotion/markup tags out of agent text for the call breakdown.
+// s2-pro uses [bracket] tags (free-form); s1 uses (parenthesis) tags.
+function extractEmotionTags(text) {
+  if (!text) return [];
+  const out = [];
+  for (const re of [/\[[^\]\n]{1,40}\]/g, /\([^)\n]{1,40}\)/g]) {
+    const m = text.match(re);
+    if (m) out.push(...m);
+  }
+  return out;
+}
+
 class Session {
   constructor(opts) {
     this.id = opts.id;
@@ -54,6 +66,11 @@ class Session {
     this.ticker = null;
     this.greeted = false;
 
+    // Per-call structured log (timestamped events + emotion tags).
+    this.startedAt = Date.now();
+    this.transcript = [];
+    this.customerNumber = opts.customerNumber || null;
+
     // Warm-takeover state. The agent says a handoff line, lets it finish playing,
     // then bridges in the manager — as if they stepped in to help.
     this.handingOff = false;
@@ -74,10 +91,19 @@ class Session {
     this.repCallSid = repCallSid;
   }
 
+  // Record one event in the call breakdown and echo it to the logs.
+  _record(role, type, text = '') {
+    const at = Date.now() - this.startedAt;
+    const tags = extractEmotionTags(text);
+    this.transcript.push({ at, role, type, text, tags });
+    const tg = tags.length ? `  ⟨emotion: ${tags.join(' ')}⟩` : '';
+    this.onLog(`[${(at / 1000).toFixed(1)}s] ${role}.${type}${text ? ': ' + text : ''}${tg}`);
+  }
+
   // ---- Twilio media-stream plumbing ----
   attachLeg(role, ws, streamSid) {
     this.legs[role] = { ws, streamSid };
-    this.onLog(`leg attached: ${role}`);
+    this._record('system', role === 'rep' ? 'manager_connected' : 'customer_connected');
     if (!this.ticker) this._startTicker();
   }
 
@@ -97,7 +123,7 @@ class Session {
     }
     this._managerDialed = true;
     const base = `https://${process.env.PUBLIC_HOST}`;
-    this.onLog('dialing manager ' + this.managerNumber);
+    this._record('system', 'dial_manager', this.managerNumber);
     this.twilioClient.calls
       .create({ to: this.managerNumber, from: this.fromNumber, url: `${base}/twilio/monitor?sid=${this.id}` })
       .then((c) => (this.repCallSid = c.sid))
@@ -163,7 +189,7 @@ class Session {
   // ---- Answering-machine detection result (from Twilio asyncAmd) ----
   onAmd(answeredBy) {
     if (this.mode !== MODE.CONNECTING) return;
-    this.onLog(`AMD: ${answeredBy}`);
+    this._record('system', 'amd', String(answeredBy));
     if (answeredBy === 'human' || answeredBy === 'unknown') {
       this._beginEngage();
     } else if (String(answeredBy).startsWith('machine')) {
@@ -211,6 +237,7 @@ class Session {
         this.aiQueue.clear();
         this._clear('customer');
         if (this.brain) this.brain.abort();
+        this._record('system', 'barge_in');
       }
     });
 
@@ -243,7 +270,7 @@ class Session {
   }
 
   _respond(customerText) {
-    this.onLog('customer: ' + customerText);
+    this._record('customer', 'said', customerText);
     this._turn((onTok) => this.brain.respond(customerText, onTok));
   }
 
@@ -297,13 +324,13 @@ class Session {
     });
     // Agent decided it can't help -> run the warm handoff instead of speaking.
     if (handoff || /\[\[\s*HANDOFF/i.test(text || '')) {
-      this.onLog('agent requested handoff');
+      this._record('agent', 'handoff_signal', '[[HANDOFF]]');
       this.takeOver();
       return;
     }
     flushChunk(true);
     this._endSpeak();
-    if (text) this.onLog('agent: ' + text);
+    if (text) this._record('agent', 'said', text);
   }
 
   // ---- Voicemail branch (machine answered) ----
@@ -313,6 +340,7 @@ class Session {
     const msg = this.script || 'Hi, just following up with you. Give us a call back when you get a chance. Thanks!';
     const leave = () => {
       this.acceptingAi = true;
+      this._record('agent', 'voicemail', msg);
       this.fish.pushText(msg);
       this.fish.flush();
       // Hang up after the message has had time to play out.
@@ -338,7 +366,7 @@ class Session {
       this._dialManager();
       return true;
     }
-    this.onLog('WARM TAKEOVER: speaking handoff line + dialing manager');
+    this._record('system', 'warm_takeover');
     this.handingOff = true;
     this.handoffAudioDone = false;
 
@@ -379,7 +407,7 @@ class Session {
 
   _completeTakeover() {
     if (this.mode === MODE.TAKEN_OVER || this.mode === MODE.DONE) return false;
-    this.onLog('TAKE OVER complete — bridging you to the customer');
+    this._record('system', 'bridged');
     this.mode = MODE.TAKEN_OVER;
     this.handingOff = false;
     this.acceptingAi = false;
@@ -396,8 +424,8 @@ class Session {
 
   hangup(reason) {
     if (this.mode === MODE.DONE) return;
+    this._record('system', 'hangup', reason || '');
     this.mode = MODE.DONE;
-    this.onLog('hangup: ' + (reason || ''));
     if (this.ticker) clearInterval(this.ticker);
     this.ticker = null;
     if (this.stt) this.stt.close();
