@@ -229,6 +229,16 @@ class Session {
     this.acceptingAi = true;
     let pending = '';
     let handoff = false;
+    let spoke = false;
+    // Each chunk is pushed AND flushed, so Fish synthesizes it immediately
+    // instead of buffering until end-of-reply.
+    const speakChunk = (t) => {
+      const seg = t.trim();
+      if (!seg) return;
+      this._speak(seg);
+      if (this.fish) this.fish.flush();
+      spoke = true;
+    };
     const flushChunk = (force) => {
       if (handoff) return;
       // Hold output while a possible [[HANDOFF]] marker is forming, so we never
@@ -237,13 +247,23 @@ class Session {
         if (!force) return;
         if (/\[\[\s*HANDOFF/i.test(pending)) return; // confirmed handoff; don't speak it
       }
-      // Send on sentence boundaries for low latency without choppy synthesis.
-      const m = pending.match(/^(.*[.!?,;:])\s+/);
-      if (m) {
-        this._speak(m[1]);
+      // Drain complete clauses first (so the opening goes out as soon as possible).
+      let m;
+      while ((m = pending.match(/^([\s\S]*?[.!?,;:])\s+/))) {
+        speakChunk(m[1]);
         pending = pending.slice(m[0].length);
-      } else if (force && pending.trim()) {
-        this._speak(pending.trim());
+      }
+      // Nothing spoken yet but enough words to start — fire the opening group now
+      // (the single biggest perceived-latency win: agent starts talking sooner).
+      if (!spoke && !force && pending.length >= 16) {
+        const i = pending.lastIndexOf(' ');
+        if (i > 0) {
+          speakChunk(pending.slice(0, i));
+          pending = pending.slice(i + 1);
+        }
+      }
+      if (force && pending.trim()) {
+        speakChunk(pending);
         pending = '';
       }
     };

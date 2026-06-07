@@ -24,6 +24,10 @@ class FishTTS extends EventEmitter {
     this.referenceId = opts.referenceId || process.env.FISH_MODEL_ID; // your cloned voice
     this.model = opts.model || process.env.FISH_TTS_MODEL || 's2-pro';
     this.sampleRate = opts.sampleRate || Number(process.env.FISH_SAMPLE_RATE || 8000);
+    // Latency knobs: 'balanced' synthesizes faster; small chunk_length means Fish
+    // doesn't buffer hundreds of chars before producing the first audio.
+    this.latency = opts.latency || process.env.FISH_LATENCY || 'balanced';
+    this.chunkLength = Number(opts.chunkLength || process.env.FISH_CHUNK_LENGTH || 80);
     this.ready = false;
     this.closed = false;
     this._pending = []; // text queued before the socket is open
@@ -43,7 +47,8 @@ class FishTTS extends EventEmitter {
             format: 'pcm',
             sample_rate: this.sampleRate,
             reference_id: this.referenceId,
-            latency: 'normal',
+            latency: this.latency,
+            chunk_length: this.chunkLength,
           },
         })
       );
