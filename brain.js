@@ -8,6 +8,33 @@ const Anthropic = require('@anthropic-ai/sdk');
 
 const MODEL = process.env.LLM_MODEL || 'claude-haiku-4-5';
 
+// Fish reads inline emotion tags and does NOT speak them aloud. s2-pro uses
+// free-form natural-language [bracket] tags; s1 uses a fixed set of (parenthesis)
+// tags. We tell Claude which syntax to emit so delivery matches the call moment.
+function buildVoiceEmotionBlock() {
+  const model = (process.env.FISH_TTS_MODEL || 's2-pro').toLowerCase();
+  if (model === 's1') {
+    return `VOICE DELIVERY (emotion tags — they are NOT spoken aloud):
+- The voice engine reads emotion tags written in (parentheses) at the START of a sentence. Use them to color HOW a line sounds.
+- Use ONE tag per sentence, only when it changes the read. Pick from: (happy) (excited) (confident) (calm) (empathetic) (curious) (grateful) (sarcastic) (satisfied) (relaxed).
+- BDC map: open warm with (happy); build value with (confident); on an objection lead with (empathetic) then (confident); soften a hard ask with (calm); celebrate a "yes" with (excited).
+- Do NOT tag every line, never stack tags, never invent unsupported ones, and keep tags at the very start of the sentence.`;
+  }
+  return `VOICE DELIVERY (emotion tags — they are NOT spoken aloud):
+- The voice engine (Fish s2-pro) reads free-form emotion cues written in [square brackets] inline. Use them to color HOW a line sounds, like stage directions.
+- Put a cue at the START of the sentence or clause it applies to. You may use an intensity word: [slightly amused], [very warm], [reassuring]. Stack at most TWO ([warm][confident]).
+- Keep it natural and sparse — tag a line only when the emotion shifts; most short lines need none. Never tag every sentence.
+- BDC palette by moment:
+  - Greeting / rapport: [warm], [upbeat], [friendly]
+  - Building value / urgency: [confident], [enthusiastic]
+  - Handling an objection: [empathetic] first, then [reassuring] or [confident]
+  - Deflecting price: [easygoing], [matter-of-fact] (never defensive)
+  - Defusing tension or a joke: [lightly amused], [playful]
+  - Asking for the appointment: [confident] or [warm] — inviting, not pushy
+  - Getting curious after repeated no's: [genuinely curious], [understanding]
+- NEVER use [[double brackets]] — that sequence is reserved. Single brackets only.`;
+}
+
 function buildSystemPrompt({ persona, script, leadContext }) {
   const base =
     persona ||
@@ -31,6 +58,8 @@ WHAT YOU DO:
 WHAT YOU NEVER DO:
 - NEVER discuss monthly payments, interest rates, or out-the-door numbers over the phone. You are NOT dodging — you genuinely know the customer gets a world-class experience in person where every question gets answered. Redirect with real value: managers give bigger discounts in person, and on a trade-in we often get them more than they were expecting.
 - NEVER say "I just wanted to make sure you got all the information," or any version of that. You do not care whether they have the information — you care about getting them into the store. Every turn points back to setting the appointment and seeing the vehicles in person.
+
+${buildVoiceEmotionBlock()}
 
 HANDOFF (escalating to a human manager — use the token [[HANDOFF]]):
 - Pricing/payment/number questions are NOT a reason to hand off. Deflect them and build value in coming in.

@@ -291,9 +291,11 @@ class Session {
     };
     const flushChunk = (force) => {
       if (handoff) return;
-      // Hold output while a possible [[HANDOFF]] marker is forming, so we never
-      // speak the signal token aloud.
-      if (pending.includes('[')) {
+      // Never speak the [[HANDOFF]] control token. But single-bracket emotion
+      // tags ([warm], [confident], ...) are meant FOR Fish and must pass straight
+      // through — so only hold when a DOUBLE bracket (or a lone trailing '[' that
+      // could still become one) is forming.
+      if (/\[\[/.test(pending) || /\[\s*$/.test(pending)) {
         if (!force) return;
         if (/\[\[\s*HANDOFF/i.test(pending)) return; // confirmed handoff; don't speak it
       }

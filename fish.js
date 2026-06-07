@@ -24,10 +24,22 @@ class FishTTS extends EventEmitter {
     this.referenceId = opts.referenceId || process.env.FISH_MODEL_ID; // your cloned voice
     this.model = opts.model || process.env.FISH_TTS_MODEL || 's2-pro';
     this.sampleRate = opts.sampleRate || Number(process.env.FISH_SAMPLE_RATE || 8000);
-    // Latency knobs: 'balanced' synthesizes faster; small chunk_length means Fish
-    // doesn't buffer hundreds of chars before producing the first audio.
+    // Latency knobs. 'balanced' synthesizes faster than 'normal'. Fish gates the
+    // FIRST chunk on min_chunk_length (the real time-to-first-audio knob); the
+    // hard floor for chunk_length is 100, so anything lower is clamped/ignored —
+    // we keep chunk_length at the 100 floor and drive first-audio via min_chunk.
     this.latency = opts.latency || process.env.FISH_LATENCY || 'balanced';
-    this.chunkLength = Number(opts.chunkLength || process.env.FISH_CHUNK_LENGTH || 80);
+    this.chunkLength = Number(opts.chunkLength || process.env.FISH_CHUNK_LENGTH || 100);
+    this.minChunkLength = Number(opts.minChunkLength || process.env.FISH_MIN_CHUNK_LENGTH || 50);
+    // Sampling: lower temperature => steadier, more consistent delivery (good for
+    // a professional phone voice); higher => more expressive but less stable.
+    this.temperature = Number(opts.temperature ?? process.env.FISH_TEMPERATURE ?? 0.6);
+    this.topP = Number(opts.topP ?? process.env.FISH_TOP_P ?? 0.7);
+    // Prosody: a touch of pace for BDC energy; normalize_loudness (s2-pro only)
+    // keeps perceived volume even across emotional swings on a phone line.
+    this.speed = Number(opts.speed ?? process.env.FISH_SPEED ?? 1.0);
+    this.volume = Number(opts.volume ?? process.env.FISH_VOLUME ?? 0);
+    this.normalizeLoudness = (process.env.FISH_NORMALIZE_LOUDNESS ?? 'true') !== 'false';
     this.ready = false;
     this.closed = false;
     this._pending = []; // text queued before the socket is open
@@ -49,6 +61,14 @@ class FishTTS extends EventEmitter {
             reference_id: this.referenceId,
             latency: this.latency,
             chunk_length: this.chunkLength,
+            min_chunk_length: this.minChunkLength,
+            temperature: this.temperature,
+            top_p: this.topP,
+            prosody: {
+              speed: this.speed,
+              volume: this.volume,
+              normalize_loudness: this.normalizeLoudness,
+            },
           },
         })
       );

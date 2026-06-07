@@ -12,6 +12,7 @@
 // Host on Render (persistent WebSocket + TLS). Listens on process.env.PORT.
 
 require('dotenv').config();
+const path = require('path');
 const express = require('express');
 const http = require('http');
 const { WebSocketServer } = require('ws');
@@ -19,6 +20,17 @@ const twilio = require('twilio');
 
 const { Session } = require('./session');
 const { nextNumber } = require('./numbers');
+const { Brain } = require('./brain');
+const { FishTTS } = require('./fish');
+
+function simTags(text) {
+  const out = [];
+  for (const re of [/\[[^\]\n]{1,40}\]/g, /\([^)\n]{1,40}\)/g]) {
+    const m = (text || '').match(re);
+    if (m) out.push(...m);
+  }
+  return out;
+}
 
 const {
   PORT = 3000,
@@ -54,6 +66,9 @@ app.use(express.urlencoded({ extended: false }));
 app.use(express.json());
 
 app.get('/', (_req, res) => res.send('AI voice-agent server up'));
+
+// ---- Call simulator UI (no Twilio, no phone) ----
+app.get('/sim', (_req, res) => res.sendFile(path.join(__dirname, 'sim.html')));
 
 // ---- Call breakdown / logs ----
 // GET /calls            -> list recent calls (+ the live one)
@@ -275,6 +290,66 @@ wss.on('connection', (ws) => {
       active.detachLeg(role);
     }
   });
+});
+
+// ---- Simulator WebSocket: drives the real Brain + Fish voice in the browser,
+// so you can iterate on the agent (persona, wording, emotion tags, handoff)
+// without placing a phone call. Customer turns come as typed text from /sim. ----
+const simWss = new WebSocketServer({ server, path: '/sim-ws' });
+
+simWss.on('connection', (ws) => {
+  let brain = null;
+  let fish = null;
+  const send = (obj) => { try { ws.send(JSON.stringify(obj)); } catch {} };
+
+  const ensureFish = () => {
+    if (fish) return;
+    // 24 kHz so the voice sounds clean on laptop speakers (telephony is 8 kHz).
+    fish = new FishTTS({ sampleRate: 24000 });
+    fish.on('audio', (pcmBuf) => { try { ws.send(pcmBuf); } catch {} });
+    fish.on('error', (e) => send({ type: 'log', text: 'fish error: ' + e.message }));
+    fish.connect();
+  };
+
+  const turn = async (producer) => {
+    let full = '';
+    try {
+      await producer((tok) => { full += tok; send({ type: 'agent_token', text: tok }); });
+    } catch (e) {
+      send({ type: 'log', text: 'brain error: ' + e.message });
+      return;
+    }
+    if (/\[\[\s*HANDOFF/i.test(full)) { send({ type: 'handoff' }); return; }
+    ensureFish();
+    fish.pushText(full);
+    fish.flush();
+    send({ type: 'agent_done', text: full, tags: simTags(full) });
+  };
+
+  ws.on('message', async (raw) => {
+    let msg;
+    try { msg = JSON.parse(raw.toString()); } catch { return; }
+    if (msg.type === 'start') {
+      brain = new Brain({
+        leadContext: msg.leadContext || 'Internet lead interested in a vehicle; has not been into the store yet.',
+      });
+      ensureFish();
+      send({ type: 'started' });
+      await turn((onTok) => brain.greet(onTok));
+    } else if (msg.type === 'say') {
+      if (!brain) brain = new Brain({ leadContext: 'Internet lead.' });
+      send({ type: 'customer', text: msg.text });
+      await turn((onTok) => brain.respond(msg.text, onTok));
+    } else if (msg.type === 'handoff') {
+      // Simulate the agent being told to hand off (manual takeover).
+      send({ type: 'handoff' });
+    } else if (msg.type === 'reset') {
+      brain = null;
+      send({ type: 'reset_ok' });
+    }
+  });
+
+  ws.on('close', () => { if (fish) fish.close(); brain = null; });
 });
 
 server.listen(PORT, () => console.log(`listening on ${PORT}`));

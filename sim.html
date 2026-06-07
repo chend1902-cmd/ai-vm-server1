@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>AI Agent — Call Simulator</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family:-apple-system,Segoe UI,Roboto,sans-serif; background:#0b1020; color:#e7ecf5; }
+  header { padding:14px 18px; background:#111a3a; display:flex; align-items:center; gap:12px; }
+  header h1 { font-size:15px; margin:0; font-weight:600; }
+  #status { font-size:12px; color:#9fb0cc; margin-left:auto; }
+  .wrap { display:flex; gap:14px; padding:14px; height:calc(100vh - 52px); }
+  .col { background:#0f1730; border:1px solid #1e2b50; border-radius:12px; display:flex; flex-direction:column; min-width:0; }
+  .col.chat { flex:2; }
+  .col.log { flex:1; }
+  .col h2 { font-size:12px; text-transform:uppercase; letter-spacing:.05em; color:#8aa0c6; margin:0; padding:10px 14px; border-bottom:1px solid #1e2b50; }
+  #transcript, #breakdown { flex:1; overflow:auto; padding:12px 14px; }
+  .msg { margin:8px 0; max-width:85%; padding:8px 11px; border-radius:10px; font-size:14px; line-height:1.35; white-space:pre-wrap; }
+  .agent { background:#23306a; }
+  .customer { background:#2a2f3e; margin-left:auto; }
+  .sys { background:transparent; color:#7d8db0; font-size:12px; max-width:100%; padding:2px 0; }
+  .tag { display:inline-block; background:#3a2b5e; color:#d9c7ff; border-radius:6px; padding:0 6px; font-size:11px; margin-right:4px; }
+  .controls { padding:12px 14px; border-top:1px solid #1e2b50; display:flex; gap:8px; flex-wrap:wrap; }
+  input[type=text] { flex:1; min-width:160px; background:#fff; color:#0b1020; border:none; border-radius:8px; padding:10px; font-size:14px; }
+  button { border:none; border-radius:8px; padding:10px 14px; font-size:13px; font-weight:600; cursor:pointer; }
+  #start { background:#16a34a; color:#fff; }
+  #send { background:#2563eb; color:#fff; }
+  #handoff { background:#dc2626; color:#fff; }
+  #reset { background:#334155; color:#fff; }
+  button:disabled { opacity:.5; cursor:default; }
+  #breakdown div { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; color:#b9c6e0; padding:2px 0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🎧 AI Agent — Call Simulator</h1>
+  <span id="status">disconnected</span>
+</header>
+<div class="wrap">
+  <div class="col chat">
+    <h2>Conversation (you = customer)</h2>
+    <div id="transcript"></div>
+    <div class="controls">
+      <button id="start">▶ Start call</button>
+      <input id="text" type="text" placeholder="Type what the customer says… (Enter to send)" disabled />
+      <button id="send" disabled>Send</button>
+      <button id="handoff" disabled>🎤 Take over</button>
+      <button id="reset">↺ Reset</button>
+    </div>
+  </div>
+  <div class="col log">
+    <h2>Breakdown + emotion tags</h2>
+    <div id="breakdown"></div>
+  </div>
+</div>
+<script>
+const $ = (id) => document.getElementById(id);
+const transcript = $('transcript'), breakdown = $('breakdown'), statusEl = $('status');
+let ws, audioCtx, nextTime = 0, started = false;
+let curAgentEl = null, curAgentText = '';
+
+function setStatus(s){ statusEl.textContent = s; }
+function scroll(el){ el.scrollTop = el.scrollHeight; }
+
+function addMsg(cls, text){
+  const d = document.createElement('div');
+  d.className = 'msg ' + cls;
+  d.textContent = text;
+  transcript.appendChild(d); scroll(transcript);
+  return d;
+}
+function addBreak(line){
+  const d = document.createElement('div'); d.textContent = line;
+  breakdown.appendChild(d); scroll(breakdown);
+}
+function ts(){ return '[' + ((performance.now()/1000)).toFixed(1) + 's] '; }
+
+// ---- audio playback: PCM16 LE mono 24kHz streamed from the server ----
+function playPcm(arrayBuf){
+  if (!audioCtx) return;
+  const pcm = new Int16Array(arrayBuf);
+  const f32 = new Float32Array(pcm.length);
+  for (let i=0;i<pcm.length;i++) f32[i] = pcm[i] / 32768;
+  const buf = audioCtx.createBuffer(1, f32.length, 24000);
+  buf.getChannelData(0).set(f32);
+  const src = audioCtx.createBufferSource();
+  src.buffer = buf; src.connect(audioCtx.destination);
+  const now = audioCtx.currentTime;
+  if (nextTime < now) nextTime = now;
+  src.start(nextTime);
+  nextTime += buf.duration;
+}
+
+function connect(){
+  ws = new WebSocket((location.protocol==='https:'?'wss':'ws') + '://' + location.host + '/sim-ws');
+  ws.binaryType = 'arraybuffer';
+  ws.onopen = () => setStatus('connected');
+  ws.onclose = () => setStatus('disconnected');
+  ws.onerror = () => setStatus('error');
+  ws.onmessage = (ev) => {
+    if (ev.data instanceof ArrayBuffer) { playPcm(ev.data); return; }
+    const m = JSON.parse(ev.data);
+    if (m.type === 'started') { addBreak(ts()+'system.call_started'); }
+    else if (m.type === 'customer') { addBreak(ts()+'customer.said: '+m.text); }
+    else if (m.type === 'agent_token') {
+      if (!curAgentEl) { curAgentEl = addMsg('agent',''); curAgentText=''; }
+      curAgentText += m.text; curAgentEl.textContent = curAgentText;
+      scroll(transcript);
+    }
+    else if (m.type === 'agent_done') {
+      // re-render with tags highlighted
+      if (curAgentEl) {
+        curAgentEl.innerHTML = '';
+        (m.tags||[]).forEach(t => { const s=document.createElement('span'); s.className='tag'; s.textContent=t; curAgentEl.appendChild(s); });
+        const span=document.createElement('span'); span.textContent=m.text; curAgentEl.appendChild(span);
+      }
+      addBreak(ts()+'agent.said: '+m.text + ((m.tags&&m.tags.length)?('  ⟨emotion: '+m.tags.join(' ')+'⟩'):''));
+      curAgentEl=null; curAgentText='';
+    }
+    else if (m.type === 'handoff') {
+      addMsg('sys','— agent triggered [[HANDOFF]] → would dial the manager —');
+      addBreak(ts()+'agent.handoff_signal: [[HANDOFF]]');
+      curAgentEl=null;
+    }
+    else if (m.type === 'log') { addBreak(ts()+m.text); }
+    else if (m.type === 'reset_ok') { transcript.innerHTML=''; breakdown.innerHTML=''; addBreak(ts()+'reset'); }
+  };
+}
+
+function ensureAudio(){
+  if (!audioCtx) audioCtx = new (window.AudioContext||window.webkitAudioContext)();
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+}
+
+$('start').onclick = () => {
+  ensureAudio();
+  if (!ws || ws.readyState!==1) connect();
+  const go = () => { ws.send(JSON.stringify({type:'start'})); started=true; $('text').disabled=false; $('send').disabled=false; $('handoff').disabled=false; $('text').focus(); };
+  if (ws.readyState===1) go(); else ws.addEventListener('open', go, {once:true});
+};
+function sendText(){
+  const t = $('text').value.trim(); if (!t || !started) return;
+  ws.send(JSON.stringify({type:'say', text:t}));
+  $('text').value='';
+}
+$('send').onclick = sendText;
+$('text').addEventListener('keydown', (e)=>{ if(e.key==='Enter') sendText(); });
+$('handoff').onclick = () => { ensureAudio(); if(ws&&ws.readyState===1) ws.send(JSON.stringify({type:'handoff'})); };
+$('reset').onclick = () => { if(ws&&ws.readyState===1) ws.send(JSON.stringify({type:'reset'})); started=false; $('text').disabled=true; $('send').disabled=true; $('handoff').disabled=true; nextTime=0; };
+
+connect();
+</script>
+</body>
+</html>
