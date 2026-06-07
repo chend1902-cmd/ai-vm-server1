@@ -22,7 +22,7 @@ class FishTTS extends EventEmitter {
     super();
     this.apiKey = opts.apiKey || process.env.FISH_API_KEY;
     this.referenceId = opts.referenceId || process.env.FISH_MODEL_ID; // your cloned voice
-    this.model = opts.model || process.env.FISH_TTS_MODEL || 's1';
+    this.model = opts.model || process.env.FISH_TTS_MODEL || 's2-pro';
     this.sampleRate = opts.sampleRate || Number(process.env.FISH_SAMPLE_RATE || 8000);
     this.ready = false;
     this.closed = false;
