@@ -176,14 +176,19 @@ class Session {
     });
 
     let buffer = '';
-    this.stt.on('transcript', (text, isFinal) => {
-      if (isFinal) buffer += (buffer ? ' ' : '') + text;
-    });
-    this.stt.on('utteranceEnd', () => {
+    const fire = () => {
       const said = buffer.trim();
       buffer = '';
       if (said) this._respond(said);
+    };
+    this.stt.on('transcript', (text, isFinal, speechFinal) => {
+      if (isFinal && text) buffer += (buffer ? ' ' : '') + text;
+      // Respond as soon as Deepgram marks end-of-speech (~300ms via endpointing),
+      // instead of waiting for the 1000ms UtteranceEnd timer. Big latency win.
+      if (speechFinal) fire();
     });
+    // Fallback: if speech_final never fired but the utterance ended, respond.
+    this.stt.on('utteranceEnd', () => fire());
 
     this.brain = new Brain({ persona: this.persona, script: this.script, leadContext: this.leadContext });
 
