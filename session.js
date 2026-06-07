@@ -228,7 +228,15 @@ class Session {
   async _turn(producer) {
     this.acceptingAi = true;
     let pending = '';
+    let handoff = false;
     const flushChunk = (force) => {
+      if (handoff) return;
+      // Hold output while a possible [[HANDOFF]] marker is forming, so we never
+      // speak the signal token aloud.
+      if (pending.includes('[')) {
+        if (!force) return;
+        if (/\[\[\s*HANDOFF/i.test(pending)) return; // confirmed handoff; don't speak it
+      }
       // Send on sentence boundaries for low latency without choppy synthesis.
       const m = pending.match(/^(.*[.!?,;:])\s+/);
       if (m) {
@@ -241,8 +249,15 @@ class Session {
     };
     const text = await producer((tok) => {
       pending += tok;
+      if (/\[\[\s*HANDOFF/i.test(pending)) handoff = true;
       flushChunk(false);
     });
+    // Agent decided it can't help -> run the warm handoff instead of speaking.
+    if (handoff || /\[\[\s*HANDOFF/i.test(text || '')) {
+      this.onLog('agent requested handoff');
+      this.takeOver();
+      return;
+    }
     flushChunk(true);
     this._endSpeak();
     if (text) this.onLog('agent: ' + text);
