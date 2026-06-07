@@ -395,9 +395,10 @@ simWss.on('connection', (ws) => {
     send({ type: 'mic_ready' });
   };
 
-  ws.on('message', async (raw) => {
-    // Binary frames = mic PCM (linear16 16k) -> Deepgram.
-    if (Buffer.isBuffer(raw) || raw instanceof ArrayBuffer) {
+  ws.on('message', async (raw, isBinary) => {
+    // ws delivers BOTH text and binary as Buffers — distinguish by isBinary.
+    // Binary frames = mic PCM (linear16 16k) -> Deepgram. Text = JSON control.
+    if (isBinary) {
       if (stt) stt.send(Buffer.from(raw));
       return;
     }
