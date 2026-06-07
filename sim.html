@@ -34,6 +34,10 @@
   #reset { background:#334155; color:#fff; }
   button:disabled { opacity:.5; cursor:default; }
   #breakdown div { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; color:#b9c6e0; padding:2px 0; }
+  #breakdown .flagline { color:#ffd166; font-weight:600; }
+  #copyflags { background:#a16207; color:#fff; }
+  .hint { font-size:11px; color:#7d8db0; padding:6px 14px 0; }
+  body.flash { box-shadow: inset 0 0 0 4px #ffd166; transition: box-shadow .05s; }
 </style>
 </head>
 <body>
@@ -57,11 +61,13 @@
       <button id="send" disabled>Send</button>
       <button id="mic" disabled>🎙 Talk</button>
       <button id="handoff" disabled>🎤 Take over</button>
+      <button id="copyflags">⚑ Copy flags</button>
       <button id="reset">↺ Reset</button>
     </div>
+    <div class="hint">Press <b>SPACE</b> anytime you hear an off cadence or wrong phrase — it flags the exact spot in the agent's audio (don't have the text box focused). ⚑ flags show on the right.</div>
   </div>
   <div class="col log">
-    <h2>Breakdown + emotion tags</h2>
+    <h2>Breakdown + emotion tags + ⚑ flags</h2>
     <div id="breakdown"></div>
   </div>
 </div>
@@ -88,6 +94,8 @@ function addBreak(line){
 function ts(){ return '[' + ((performance.now()/1000)).toFixed(1) + 's] '; }
 
 // ---- audio playback: PCM16 LE mono 24kHz streamed from the server ----
+// Track each agent line's audio window so a SPACE press maps to an exact spot.
+let lines = [], pendingLineText = null, curLine = null;
 function playPcm(arrayBuf){
   if (!audioCtx) return;
   const pcm = new Int16Array(arrayBuf);
@@ -99,9 +107,47 @@ function playPcm(arrayBuf){
   src.buffer = buf; src.connect(audioCtx.destination);
   const now = audioCtx.currentTime;
   if (nextTime < now) nextTime = now;
-  src.start(nextTime);
+  const startAt = nextTime;
+  // First audio chunk of a new agent line -> open a new line window.
+  if (pendingLineText !== null) {
+    curLine = { index: lines.length, text: pendingLineText, audioStart: startAt, audioEnd: startAt };
+    lines.push(curLine);
+    pendingLineText = null;
+  }
+  src.start(startAt);
   nextTime += buf.duration;
+  if (curLine) curLine.audioEnd = nextTime;
 }
+
+// ---- SPACE = flag the spot you just heard ----
+const flags = [];
+const REACTION = 0.3; // you press ~0.3s after hearing it
+function flagNow(){
+  if (!audioCtx) return;
+  const t = audioCtx.currentTime;
+  let line = null;
+  for (let i = lines.length-1; i>=0; i--){ if (lines[i].audioStart <= t){ line = lines[i]; break; } }
+  if (!line){ recordFlag({ note:'(no agent audio playing)' }); return; }
+  const dur = Math.max(0.001, line.audioEnd - line.audioStart);
+  const pos = Math.max(0, Math.min(dur, (t - line.audioStart) - REACTION));
+  const words = line.text.replace(/\[[^\]]*\]/g,'').trim().split(/\s+/);
+  const idx = Math.min(words.length-1, Math.max(0, Math.floor((pos/dur) * words.length)));
+  const phrase = words.slice(Math.max(0, idx-2), idx+3).join(' ');
+  recordFlag({ lineIndex: line.index, atSec: pos.toFixed(1), phrase, fullLine: line.text });
+}
+function recordFlag(f){
+  flags.push(f);
+  const d = document.createElement('div'); d.className = 'flagline';
+  d.textContent = '⚑ flag ' + (f.atSec!=null ? ('@ '+f.atSec+'s into line #'+f.lineIndex+' — near: "…'+f.phrase+'…"') : f.note);
+  breakdown.appendChild(d); scroll(breakdown);
+  document.body.classList.add('flash'); setTimeout(()=>document.body.classList.remove('flash'), 120);
+}
+window.addEventListener('keydown', (e) => {
+  if (e.code !== 'Space' && e.key !== ' ') return;
+  if (document.activeElement === $('text')) return; // typing a message — let space type
+  e.preventDefault();
+  flagNow();
+});
 
 function connect(){
   ws = new WebSocket((location.protocol==='https:'?'wss':'ws') + '://' + location.host + '/sim-ws');
@@ -112,7 +158,7 @@ function connect(){
   ws.onmessage = (ev) => {
     if (ev.data instanceof ArrayBuffer) { playPcm(ev.data); return; }
     const m = JSON.parse(ev.data);
-    if (m.type === 'started') { addMsg('sys','— '+(m.scenario||'call')+' started —'); addBreak(ts()+'system.call_started: '+(m.scenario||'')); }
+    if (m.type === 'started') { lines=[]; flags.length=0; pendingLineText=null; curLine=null; nextTime=0; addMsg('sys','— '+(m.scenario||'call')+' started —'); addBreak(ts()+'system.call_started: '+(m.scenario||'')); }
     else if (m.type === 'customer') { addBreak(ts()+'customer.said: '+m.text); }
     else if (m.type === 'agent_token') {
       if (!curAgentEl) { curAgentEl = addMsg('agent',''); curAgentText=''; }
@@ -128,6 +174,7 @@ function connect(){
       }
       addBreak(ts()+'agent.said: '+m.text + ((m.tags&&m.tags.length)?('  ⟨emotion: '+m.tags.join(' ')+'⟩'):''));
       curAgentEl=null; curAgentText='';
+      pendingLineText = m.text; // next audio chunk opens this line's flag window
     }
     else if (m.type === 'handoff') {
       addMsg('sys','— agent triggered [[HANDOFF]] → would dial the manager —');
@@ -135,7 +182,7 @@ function connect(){
       curAgentEl=null;
     }
     else if (m.type === 'log') { addBreak(ts()+m.text); }
-    else if (m.type === 'reset_ok') { transcript.innerHTML=''; breakdown.innerHTML=''; addBreak(ts()+'reset'); }
+    else if (m.type === 'reset_ok') { transcript.innerHTML=''; breakdown.innerHTML=''; lines=[]; flags.length=0; pendingLineText=null; curLine=null; nextTime=0; addBreak(ts()+'reset'); }
   };
 }
 
@@ -199,6 +246,14 @@ function sendText(){
 $('send').onclick = sendText;
 $('text').addEventListener('keydown', (e)=>{ if(e.key==='Enter') sendText(); });
 $('handoff').onclick = () => { ensureAudio(); if(ws&&ws.readyState===1) ws.send(JSON.stringify({type:'handoff'})); };
+$('copyflags').onclick = async () => {
+  if (!flags.length) { addBreak(ts()+'(no flags yet)'); return; }
+  const txt = flags.map((f,i)=> f.atSec!=null
+    ? `#${i+1}  ${f.atSec}s into agent line ${f.lineIndex}\n     near: "…${f.phrase}…"\n     line: ${f.fullLine}`
+    : `#${i+1}  ${f.note}`).join('\n\n');
+  try { await navigator.clipboard.writeText(txt); addBreak(ts()+'✓ '+flags.length+' flag(s) copied to clipboard'); }
+  catch { addBreak('--- FLAGS (copy manually) ---\n'+txt); }
+};
 $('reset').onclick = () => { if(micOn) stopMic(); if(ws&&ws.readyState===1) ws.send(JSON.stringify({type:'reset'})); started=false; $('text').disabled=true; $('send').disabled=true; $('handoff').disabled=true; $('mic').disabled=true; nextTime=0; };
 
 connect();
