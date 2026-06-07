@@ -299,9 +299,9 @@ app.post('/start-call', async (req, res) => {
     });
 
     let repCall = null;
-    // Monitor leg is on by default; pass {"monitor": false} to skip it (handy while
-    // iterating on the agent so your cell doesn't ring and we save a concurrency slot).
-    const wantMonitor = req.body.monitor !== false && String(req.body.monitor) !== 'false';
+    // Monitor leg is OFF by default (end-state: no always-on monitor; the manager
+    // is pulled in only on a warm handoff). Pass {"monitor": true} to opt in.
+    const wantMonitor = req.body.monitor === true || String(req.body.monitor) === 'true';
     if (REP_CELL && wantMonitor) {
       repCall = await client.calls.create({
         to: REP_CELL,
