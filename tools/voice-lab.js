@@ -31,7 +31,6 @@ const OUT_DIR = path.join(__dirname, 'voice-lab-out');
 const SCRIPT = [
   { id: 'greeting', text: `[warm] Hey, is this Dave? [upbeat] This is Sam over at the dealership — how's your morning going?` },
   { id: 'value-build', text: `[confident] So the one you were looking at is still on the lot, and it's honestly nicer in person. Come see it and I'll have it pulled up front for you.` },
-  { id: 'trade-hook', text: `[upbeat] Real quick — what are you driving now? [confident] We're paying more for trades right now than we have in a while, and I can get yours appraised in person in like ten minutes. No strings.` },
   { id: 'price-deflect', text: `[easygoing] I hear you on the payment. [matter-of-fact] That's exactly the kind of thing my manager sharpens his pencil on when you're sitting here — and we usually get you more for your trade than you'd expect.` },
   { id: 'objection', text: `[empathetic] Totally fair, I get it. [reassuring] No pressure at all — even a quick fifteen-minute look, and if it's not right, you walk. Fair enough?` },
   { id: 'the-ask', text: `[warm] So does tomorrow at five work for you, or is Saturday morning easier?` },
