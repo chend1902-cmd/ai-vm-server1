@@ -18,6 +18,11 @@ class DeepgramSTT extends EventEmitter {
     // Twilio sends mu-law 8k; the browser sim sends linear16 16k.
     this.encoding = opts.encoding || 'mulaw';
     this.sampleRate = opts.sampleRate || 8000;
+    // Turn-taking latency: endpointing is the silence (ms) before Deepgram fires
+    // speech_final — the lower it is, the sooner the agent starts replying.
+    // (utterance_end_ms is Deepgram's 1000ms-minimum fallback.)
+    this.endpointing = Number(opts.endpointing ?? process.env.STT_ENDPOINTING ?? 200);
+    this.utteranceEndMs = Number(opts.utteranceEndMs ?? process.env.STT_UTTERANCE_END_MS ?? 1000);
     this.conn = null;
     this.ready = false;
   }
@@ -31,8 +36,8 @@ class DeepgramSTT extends EventEmitter {
       interim_results: true,
       smart_format: true,
       vad_events: true,
-      endpointing: 300, // ms of silence -> speech_final
-      utterance_end_ms: 1000,
+      endpointing: this.endpointing, // ms of silence -> speech_final
+      utterance_end_ms: this.utteranceEndMs,
     });
 
     this.conn.on(LiveTranscriptionEvents.Open, () => {

@@ -307,7 +307,7 @@ class Session {
       }
       // Nothing spoken yet but enough words to start — fire the opening group now
       // (the single biggest perceived-latency win: agent starts talking sooner).
-      if (!spoke && !force && pending.length >= 16) {
+      if (!spoke && !force && pending.length >= 10) {
         const i = pending.lastIndexOf(' ');
         if (i > 0) {
           speakChunk(pending.slice(0, i));

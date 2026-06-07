@@ -30,7 +30,7 @@ class FishTTS extends EventEmitter {
     // we keep chunk_length at the 100 floor and drive first-audio via min_chunk.
     this.latency = opts.latency || process.env.FISH_LATENCY || 'balanced';
     this.chunkLength = Number(opts.chunkLength || process.env.FISH_CHUNK_LENGTH || 100);
-    this.minChunkLength = Number(opts.minChunkLength || process.env.FISH_MIN_CHUNK_LENGTH || 50);
+    this.minChunkLength = Number(opts.minChunkLength || process.env.FISH_MIN_CHUNK_LENGTH || 20);
     // Sampling: lower temperature => steadier, more consistent delivery (good for
     // a professional phone voice); higher => more expressive but less stable.
     this.temperature = Number(opts.temperature ?? process.env.FISH_TEMPERATURE ?? 0.6);
