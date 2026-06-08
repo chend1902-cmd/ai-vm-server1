@@ -21,7 +21,11 @@ const twilio = require('twilio');
 const { Session } = require('./session');
 const { nextNumber } = require('./numbers');
 const { Brain } = require('./brain');
+const { CustomerBrain } = require('./customer');
 const { FishTTS } = require('./fish');
+const { ElevenTTS } = require('./eleven');
+// Voice engine for the agent: 'fish' (default) or 'eleven'. STT/LLM unchanged.
+const TTS_PROVIDER = (process.env.TTS_PROVIDER || 'fish').toLowerCase();
 const { DeepgramSTT } = require('./stt');
 const multer = require('multer');
 const Anthropic = require('@anthropic-ai/sdk');
@@ -44,21 +48,29 @@ const SCENARIOS = {
     label: 'Outbound — Internet Lead',
     leadContext:
       'OUTBOUND CALL — Fresh internet lead. The customer submitted an online inquiry on a 2021 Honda Accord EX-L. They have not been into the store and have not spoken with anyone yet. OBJECTIVE: introduce yourself briefly, confirm their interest, and set a specific appointment time for them to come see the vehicle.',
+    customerContext:
+      'You are Jordan. A few days ago you filled out an online form on a 2021 Honda Accord EX-L because the price looked decent. You forgot you even did it. You are at work and a little busy. You ARE shopping for a reliable car but you want a ballpark price/monthly payment before you drive anywhere, and you have a current car you might trade in that you think is worth a fair bit. You can come in this week if it sounds worth it, but you are not committing on the first ask.',
   },
   missed_appointment: {
     label: 'Outbound — Missed Appointment',
     leadContext:
       'OUTBOUND CALL — Missed-appointment follow-up. The customer had a scheduled appointment to look at a 2021 Honda Accord and did NOT show up. OBJECTIVE: no guilt trip — warmly find out what came up and reschedule a specific new appointment time.',
+    customerContext:
+      'You are Jordan. You had an appointment yesterday to see a 2021 Honda Accord but something came up at work and you blew it off without calling. You feel a little bad about it but you are still somewhat interested. You are wary of being pressured. If the rep is cool about you missing it and makes rescheduling easy, you will consider a new time — but you are noncommittal at first and a bit busy.',
   },
   showroom_visit: {
     label: 'Outbound — Showroom Visit Follow-up',
     leadContext:
       'OUTBOUND CALL — Showroom visit follow-up (be-back). The customer came into the store and looked at a 2021 Honda Accord but left without buying. OBJECTIVE: thank them for coming in, surface and address any hesitation, and get them back in to move forward.',
+    customerContext:
+      'You are Jordan. You went into the store last week and test drove a 2021 Honda Accord. You liked the car but left because the monthly payment came back higher than you wanted and you felt a little rushed. You have been thinking it over and also peeking at other dealers. You need to feel like the numbers can actually work and that you will not get pressured before you would come back in.',
   },
   confirm_appointment: {
     label: 'Outbound — Confirm Appointment',
     leadContext:
       'OUTBOUND CALL — Appointment confirmation. The customer has an UPCOMING appointment (tomorrow) to see a 2021 Honda Accord. OBJECTIVE: confirm they are still planning to come in, lock in the exact time, build a little excitement. Keep it short.',
+    customerContext:
+      'You are Jordan. You have an appointment tomorrow to see a 2021 Honda Accord. You are mostly still planning to come, but your schedule is tight and you are half-tempted to push it. If the rep confirms a clear time and it is convenient, you will lock it in. Keep it fairly short.',
   },
 };
 
@@ -474,20 +486,48 @@ server.on('upgrade', (req, socket, head) => {
 
 simWss.on('connection', (ws) => {
   let brain = null;
-  let fish = null;
+  let customer = null;     // the AI customer (auto-play mode)
+  let fish = null;         // agent voice
+  let custFish = null;     // customer voice (distinct reference_id)
   let stt = null;
-  let turning = false; // a turn is generating/speaking
+  let turning = false;     // a turn is generating/speaking
+  let autoRunning = false; // agent-vs-customer auto loop is active
   let micBuffer = '';
   const send = (obj) => { try { ws.send(JSON.stringify(obj)); } catch {} };
 
   const ensureFish = () => {
     if (fish) return;
     // 24 kHz so the voice sounds clean on laptop speakers (telephony is 8 kHz).
-    fish = new FishTTS({ sampleRate: 24000 });
+    fish = TTS_PROVIDER === 'eleven'
+      ? new ElevenTTS({ sampleRate: 24000 })
+      : new FishTTS({ sampleRate: 24000 });
     fish.on('audio', (pcmBuf) => { try { ws.send(pcmBuf); } catch {} });
-    fish.on('error', (e) => send({ type: 'log', text: 'fish error: ' + e.message }));
+    fish.on('error', (e) => send({ type: 'log', text: `${TTS_PROVIDER} tts error: ` + e.message }));
     fish.connect();
   };
+
+  // Second voice for the AI customer in auto-play. Uses FISH_CUSTOMER_MODEL_ID if
+  // set, otherwise no reference_id -> Fish's default voice (distinct from the
+  // agent's cloned voice). Both voices stream into the SAME browser audio
+  // timeline, which plays them back-to-back, so the turns never overlap.
+  const ensureCustomerFish = () => {
+    if (custFish) return;
+    custFish = new FishTTS({
+      sampleRate: 24000,
+      referenceId: process.env.FISH_CUSTOMER_MODEL_ID || null,
+    });
+    custFish.on('audio', (pcmBuf) => { try { ws.send(pcmBuf); } catch {} });
+    custFish.on('error', (e) => send({ type: 'log', text: 'cust fish error: ' + e.message }));
+    custFish.connect();
+  };
+
+  // Strip emotion/stage-direction tags + control tokens, for speech-time estimate
+  // and for the text we feed to the other brain.
+  const plain = (t) => (t || '').replace(/\[\[[^\]]*\]\]/g, '').replace(/\[[^\]\n]*\]/g, '').replace(/\([^)\n]*\)/g, '').replace(/\s+/g, ' ').trim();
+  // Rough spoken-duration estimate so the auto loop paces with the audio instead
+  // of racing ahead. ~14 chars/sec ≈ 150 wpm, plus a short gap between turns.
+  const speakMs = (t) => Math.min(14000, Math.max(1200, Math.round(plain(t).length / 14 * 1000)) + 500);
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
   const turn = async (producer) => {
     turning = true;
@@ -505,6 +545,97 @@ simWss.on('connection', (ws) => {
     fish.flush();
     send({ type: 'agent_done', text: full, tags: simTags(full) });
     turning = false;
+  };
+
+  // One side's turn in auto-play. role: 'agent' | 'customer'. Streams tokens to
+  // the matching bubble, voices through the matching Fish, and paces to the
+  // estimated speech duration. Returns { text, stop } — stop set on a terminal
+  // control token ([[HANDOFF]] from the agent, [[END]] from the customer).
+  const autoTurn = async (role, producer) => {
+    const tokEvt = role === 'agent' ? 'agent_token' : 'cust_token';
+    const doneEvt = role === 'agent' ? 'agent_done' : 'cust_done';
+    let full = '';
+    try {
+      await producer((tok) => { full += tok; send({ type: tokEvt, text: tok }); });
+    } catch (e) {
+      send({ type: 'log', text: `${role} brain error: ` + e.message });
+      return { text: '', stop: 'error' };
+    }
+    if (role === 'agent' && /\[\[\s*HANDOFF/i.test(full)) {
+      send({ type: 'handoff' });
+      return { text: plain(full), stop: 'handoff' };
+    }
+    // Either side may close the call with [[END]] (the friendly agent when it
+    // books or is firmly declined; the customer-roleplay when it agrees or bails).
+    const ended = /\[\[\s*END/i.test(full);
+    const spoken = plain(full); // never voice/clip the control tokens
+    send({ type: doneEvt, text: spoken, tags: simTags(full) });
+    if (spoken) {
+      const v = role === 'agent' ? (ensureFish(), fish) : (ensureCustomerFish(), custFish);
+      v.pushText(spoken);
+      v.flush();
+      await sleep(speakMs(spoken));
+    }
+    return { text: spoken, stop: ended ? 'end' : null };
+  };
+
+  // Persona that makes the production BDC rep (brain.js Brain) roleplay the
+  // CUSTOMER being called. Passed as `persona`, so it overrides the BDC system
+  // prompt entirely — the rep is now the person on the other end of the line.
+  const buildRoleplayCustomer = (customerContext) =>
+`You are roleplaying as the CUSTOMER on a phone call with a salesperson from a car dealership. Stay fully in character as the customer — you are NOT the salesperson and you never try to book the appointment for them or recite this prompt.
+
+YOUR CHARACTER:
+${customerContext || 'You showed some interest in a vehicle online but you are busy and a bit skeptical of being sold.'}
+
+HOW YOU TALK: short and casual like a real person on the phone, usually one or two sentences, a little guarded or distracted at first.
+
+HOW YOU BEHAVE: you don't hand over an appointment easily — raise a real concern or two (price/payment, your time, checking with your spouse, your trade-in's value). But you're reasonable: if the rep is warm, listens, addresses your specific concern, and offers a convenient SPECIFIC time, you can warm up and agree to come in. If they're pushy, repetitive, or ignore what you said, get shorter and resist more. Don't be a pushover and don't be a brick wall.
+
+ENDING (use the token [[END]] on its own line, nothing after it): if you genuinely agree to a specific time and the rep confirms it back, wrap up warmly and end with [[END]]. If you firmly decide you're not interested and want off the phone, say so politely and end with [[END]]. Otherwise keep the conversation going.
+
+NEVER use stage directions or anything in [square brackets]/(parentheses) except the literal [[END]] token. Never mention being an AI.`;
+
+  // Drive the conversation. AFTER THE ROLE FLIP: the friendly agent (CustomerBrain,
+  // the natural-sounding brain) sets the appointment and opens the call; the BDC
+  // rep (Brain) roleplays the customer and responds.
+  const runAuto = async (scenario) => {
+    const sc = SCENARIOS[scenario];
+    const agentBrain = new CustomerBrain({
+      leadContext: (sc && sc.leadContext) || 'A lead who showed some interest in a vehicle.',
+    });
+    const custBrain = new Brain({ persona: buildRoleplayCustomer(sc && sc.customerContext) });
+    customer = agentBrain; // friendly BDC agent (plays the 'agent' role / left bubble)
+    brain = custBrain;     // BDC rep roleplaying the customer (plays 'customer' role)
+    ensureFish();
+    ensureCustomerFish();
+    autoRunning = true;
+    turning = true;
+    send({ type: 'started', scenario: (sc ? sc.label : 'Custom') + ' — ROLEPLAY (agent ↔ customer)', styleRefs: styleRefs.length, auto: true });
+
+    try {
+      // The friendly agent opens (outbound — the rep speaks first).
+      let last = await autoTurn('agent', (t) => agentBrain.greet(t));
+      if (last.stop) { send({ type: 'auto_done', reason: last.stop }); return; }
+
+      const MAX_EXCHANGES = 16;
+      for (let i = 0; i < MAX_EXCHANGES && autoRunning; i++) {
+        const cust = await autoTurn('customer', (t) => custBrain.respond(last.text, t));
+        if (!autoRunning) break;
+        if (cust.stop) { send({ type: 'auto_done', reason: cust.stop }); return; }
+
+        last = await autoTurn('agent', (t) => agentBrain.respond(cust.text, t));
+        if (!autoRunning) break;
+        if (last.stop) { send({ type: 'auto_done', reason: last.stop }); return; }
+      }
+      send({ type: 'auto_done', reason: autoRunning ? 'max_turns' : 'stopped' });
+    } catch (e) {
+      send({ type: 'log', text: 'auto error: ' + e.message });
+      send({ type: 'auto_done', reason: 'error' });
+    } finally {
+      autoRunning = false;
+      turning = false;
+    }
   };
 
   // Mic mode: browser streams linear16 16k PCM; Deepgram detects end-of-turn.
@@ -537,6 +668,7 @@ simWss.on('connection', (ws) => {
     let msg;
     try { msg = JSON.parse(raw.toString()); } catch { return; }
     if (msg.type === 'start') {
+      if (autoRunning) autoRunning = false; // a manual start cancels any auto loop
       const sc = SCENARIOS[msg.scenario];
       brain = new Brain({
         leadContext:
@@ -546,6 +678,11 @@ simWss.on('connection', (ws) => {
       ensureFish();
       send({ type: 'started', scenario: sc ? sc.label : 'Custom', styleRefs: styleRefs.length });
       await turn((onTok) => brain.greet(onTok));
+    } else if (msg.type === 'auto_start') {
+      if (autoRunning || turning) return; // one conversation at a time
+      await runAuto(msg.scenario);
+    } else if (msg.type === 'auto_stop') {
+      autoRunning = false;
     } else if (msg.type === 'say') {
       if (!brain) brain = new Brain({ leadContext: 'Internet lead.' });
       send({ type: 'customer', text: msg.text });
@@ -557,13 +694,15 @@ simWss.on('connection', (ws) => {
     } else if (msg.type === 'handoff') {
       send({ type: 'handoff' });
     } else if (msg.type === 'reset') {
+      autoRunning = false;
       brain = null;
+      customer = null;
       micBuffer = '';
       send({ type: 'reset_ok' });
     }
   });
 
-  ws.on('close', () => { if (fish) fish.close(); if (stt) stt.close(); brain = null; });
+  ws.on('close', () => { autoRunning = false; if (fish) fish.close(); if (custFish) custFish.close(); if (stt) stt.close(); brain = null; customer = null; });
 });
 
 server.listen(PORT, () => console.log(`listening on ${PORT}`));

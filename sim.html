@@ -27,9 +27,13 @@
   select { background:#1b2547; color:#e7ecf5; border:1px solid #2a3a66; border-radius:8px; padding:10px; font-size:13px; }
   button { border:none; border-radius:8px; padding:10px 14px; font-size:13px; font-weight:600; cursor:pointer; }
   #start { background:#16a34a; color:#fff; }
+  #auto { background:#7c3aed; color:#fff; }
+  #auto.on { background:#dc2626; }
   #send { background:#2563eb; color:#fff; }
   #mic { background:#0891b2; color:#fff; }
   #mic.on { background:#dc2626; }
+  #record { background:#475569; color:#fff; }
+  #record.on { background:#dc2626; }
   #handoff { background:#dc2626; color:#fff; }
   #reset { background:#334155; color:#fff; }
   button:disabled { opacity:.5; cursor:default; }
@@ -59,9 +63,11 @@
         <option value="confirm_appointment">Confirm Appointment</option>
       </select>
       <button id="start">▶ Start call</button>
+      <button id="auto" title="Let the AI agent and an AI customer talk to each other">🤖 Auto-play</button>
       <input id="text" type="text" placeholder="Type what the customer says… (Enter to send)" disabled />
       <button id="send" disabled>Send</button>
       <button id="mic" disabled>🎙 Talk</button>
+      <button id="record" title="Record the call audio (both voices + your mic) and download it">⏺ Record</button>
       <button id="handoff" disabled>🎤 Take over</button>
       <button id="copyflags">⚑ Copy flags</button>
       <button id="reset">↺ Reset</button>
@@ -79,8 +85,9 @@
 <script>
 const $ = (id) => document.getElementById(id);
 const transcript = $('transcript'), breakdown = $('breakdown'), statusEl = $('status');
-let ws, audioCtx, nextTime = 0, started = false;
+let ws, audioCtx, nextTime = 0, started = false, autoOn = false;
 let curAgentEl = null, curAgentText = '';
+let curCustEl = null, curCustText = '';
 
 function setStatus(s){ statusEl.textContent = s; }
 function scroll(el){ el.scrollTop = el.scrollHeight; }
@@ -109,7 +116,7 @@ function playPcm(arrayBuf){
   const buf = audioCtx.createBuffer(1, f32.length, 24000);
   buf.getChannelData(0).set(f32);
   const src = audioCtx.createBufferSource();
-  src.buffer = buf; src.connect(audioCtx.destination);
+  src.buffer = buf; src.connect(mixNode || audioCtx.destination);
   const now = audioCtx.currentTime;
   if (nextTime < now) nextTime = now;
   const startAt = nextTime;
@@ -163,7 +170,7 @@ function connect(){
   ws.onmessage = (ev) => {
     if (ev.data instanceof ArrayBuffer) { playPcm(ev.data); return; }
     const m = JSON.parse(ev.data);
-    if (m.type === 'started') { lines=[]; flags.length=0; pendingLineText=null; curLine=null; nextTime=0; addMsg('sys','— '+(m.scenario||'call')+' started —'); addBreak(ts()+'system.call_started: '+(m.scenario||'')); }
+    if (m.type === 'started') { lines=[]; flags.length=0; pendingLineText=null; curLine=null; nextTime=0; if (m.auto){ autoOn=true; $('auto').textContent='⏹ Stop auto'; $('auto').classList.add('on'); $('text').disabled=true; $('send').disabled=true; } addMsg('sys','— '+(m.scenario||'call')+' started —'); addBreak(ts()+'system.call_started: '+(m.scenario||'')); }
     else if (m.type === 'customer') { addBreak(ts()+'customer.said: '+m.text); }
     else if (m.type === 'agent_token') {
       if (!curAgentEl) { curAgentEl = addMsg('agent',''); curAgentText=''; }
@@ -181,18 +188,44 @@ function connect(){
       curAgentEl=null; curAgentText='';
       pendingLineText = m.text; // next audio chunk opens this line's flag window
     }
+    else if (m.type === 'cust_token') {
+      if (!curCustEl) { curCustEl = addMsg('customer',''); curCustText=''; }
+      curCustText += m.text; curCustEl.textContent = curCustText;
+      scroll(transcript);
+    }
+    else if (m.type === 'cust_done') {
+      if (curCustEl) curCustEl.textContent = m.text;
+      addBreak(ts()+'customer.said: '+m.text);
+      curCustEl=null; curCustText='';
+      pendingLineText = m.text; // customer audio also gets a flag window
+    }
+    else if (m.type === 'auto_done') {
+      autoOn=false; $('auto').textContent='🤖 Auto-play'; $('auto').classList.remove('on');
+      addMsg('sys','— auto conversation ended ('+(m.reason||'done')+') —');
+      addBreak(ts()+'system.auto_done: '+(m.reason||''));
+    }
     else if (m.type === 'handoff') {
       addMsg('sys','— agent triggered [[HANDOFF]] → would dial the manager —');
       addBreak(ts()+'agent.handoff_signal: [[HANDOFF]]');
       curAgentEl=null;
     }
     else if (m.type === 'log') { addBreak(ts()+m.text); }
-    else if (m.type === 'reset_ok') { transcript.innerHTML=''; breakdown.innerHTML=''; lines=[]; flags.length=0; pendingLineText=null; curLine=null; nextTime=0; addBreak(ts()+'reset'); }
+    else if (m.type === 'reset_ok') { transcript.innerHTML=''; breakdown.innerHTML=''; lines=[]; flags.length=0; pendingLineText=null; curLine=null; nextTime=0; curAgentEl=null; curCustEl=null; autoOn=false; $('auto').textContent='🤖 Auto-play'; $('auto').classList.remove('on'); addBreak(ts()+'reset'); }
   };
 }
 
+let mixNode = null, recDest = null;
 function ensureAudio(){
   if (!audioCtx) audioCtx = new (window.AudioContext||window.webkitAudioContext)();
+  if (!mixNode) {
+    // All playback flows through mixNode -> speakers AND -> recDest (the recording
+    // tap). The mic, when active, is also patched into recDest so a human turn is
+    // captured too — without echoing to the speakers.
+    mixNode = audioCtx.createGain();
+    mixNode.connect(audioCtx.destination);
+    recDest = audioCtx.createMediaStreamDestination();
+    mixNode.connect(recDest);
+  }
   if (audioCtx.state === 'suspended') audioCtx.resume();
 }
 
@@ -200,6 +233,15 @@ $('start').onclick = () => {
   ensureAudio();
   if (!ws || ws.readyState!==1) connect();
   const go = () => { ws.send(JSON.stringify({type:'start', scenario: $('scenario').value})); started=true; $('text').disabled=false; $('send').disabled=false; $('handoff').disabled=false; $('mic').disabled=false; $('text').focus(); };
+  if (ws.readyState===1) go(); else ws.addEventListener('open', go, {once:true});
+};
+
+// Auto-play: the AI agent and an AI customer talk to each other (use headphones).
+$('auto').onclick = () => {
+  if (autoOn) { if (ws&&ws.readyState===1) ws.send(JSON.stringify({type:'auto_stop'})); return; }
+  ensureAudio();
+  if (!ws || ws.readyState!==1) connect();
+  const go = () => ws.send(JSON.stringify({type:'auto_start', scenario: $('scenario').value}));
   if (ws.readyState===1) go(); else ws.addEventListener('open', go, {once:true});
 };
 
@@ -232,6 +274,7 @@ async function micToggle(){
     ws.send(pcm.buffer);
   };
   micSource.connect(micNode); micNode.connect(micSilent); micSilent.connect(audioCtx.destination);
+  if (recDest) micSource.connect(recDest); // capture the human voice into recordings
   micOn = true; $('mic').textContent='⏹ Stop mic'; $('mic').classList.add('on');
   addMsg('sys','🎙 mic on — speak after the agent finishes (use headphones to avoid echo)');
 }
@@ -260,6 +303,45 @@ $('copyflags').onclick = async () => {
   catch { addBreak('--- FLAGS (copy manually) ---\n'+txt); }
 };
 $('reset').onclick = () => { if(micOn) stopMic(); if(ws&&ws.readyState===1) ws.send(JSON.stringify({type:'reset'})); started=false; $('text').disabled=true; $('send').disabled=true; $('handoff').disabled=true; $('mic').disabled=true; nextTime=0; };
+
+// ---- record the call audio (both AI voices + your mic) -> download a file ----
+let mediaRecorder = null, recChunks = [], recMime = '', recOn = false;
+function pickRecMime(){
+  const opts = ['audio/webm;codecs=opus','audio/webm','audio/mp4','audio/ogg'];
+  for (const m of opts){ if (window.MediaRecorder && MediaRecorder.isTypeSupported(m)) return m; }
+  return '';
+}
+function startRec(){
+  ensureAudio(); // builds recDest if needed and resumes the context
+  if (!window.MediaRecorder || !recDest){ addMsg('sys','recording not supported in this browser'); return; }
+  recChunks = []; recMime = pickRecMime();
+  try { mediaRecorder = new MediaRecorder(recDest.stream, recMime ? { mimeType: recMime } : undefined); }
+  catch(e){ addMsg('sys','record error: '+e.message); return; }
+  mediaRecorder.ondataavailable = (e) => { if (e.data && e.data.size) recChunks.push(e.data); };
+  mediaRecorder.onstop = saveRec;
+  mediaRecorder.start();
+  recOn = true; $('record').textContent='⏹ Stop & save'; $('record').classList.add('on');
+  addMsg('sys','⏺ recording — both voices and your mic are captured');
+  addBreak(ts()+'recording started');
+}
+function stopRec(){
+  if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
+  recOn = false; $('record').textContent='⏺ Record'; $('record').classList.remove('on');
+}
+function saveRec(){
+  if (!recChunks.length){ addBreak(ts()+'(recording was empty)'); return; }
+  const blob = new Blob(recChunks, { type: recMime || 'audio/webm' });
+  const ext = recMime.includes('mp4') ? 'mp4' : recMime.includes('ogg') ? 'ogg' : 'webm';
+  const stamp = new Date().toISOString().replace(/[:.]/g,'-').slice(0,19);
+  const name = 'sim-call-'+stamp+'.'+ext;
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href = url; a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url), 15000);
+  addMsg('sys','💾 saved '+name+' ('+Math.round(blob.size/1024)+' KB)');
+  addBreak(ts()+'recording saved: '+name);
+}
+$('record').onclick = () => { recOn ? stopRec() : startRec(); };
 
 // ---- upload rep call clips -> server transcribes + distills style ----
 const uploadzone = $('uploadzone'), fileinput = $('fileinput'), uploadstatus = $('uploadstatus');

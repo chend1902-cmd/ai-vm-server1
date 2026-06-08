@@ -21,7 +21,9 @@ class FishTTS extends EventEmitter {
   constructor(opts = {}) {
     super();
     this.apiKey = opts.apiKey || process.env.FISH_API_KEY;
-    this.referenceId = opts.referenceId || process.env.FISH_MODEL_ID; // your cloned voice
+    // Voice: opts.referenceId wins; else FISH_MODEL_ID; else null (Fish default
+    // voice). Normalize '' -> null so a blanked env var means "use default".
+    this.referenceId = opts.referenceId || process.env.FISH_MODEL_ID || null;
     this.model = opts.model || process.env.FISH_TTS_MODEL || 's2-pro';
     this.sampleRate = opts.sampleRate || Number(process.env.FISH_SAMPLE_RATE || 8000);
     // Latency knobs. 'balanced' synthesizes faster than 'normal'. Fish gates the

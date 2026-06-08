@@ -22,6 +22,7 @@ const {
   SampleQueue,
 } = require('./audio');
 const { FishTTS } = require('./fish');
+const { ElevenTTS } = require('./eleven');
 const { DeepgramSTT } = require('./stt');
 const { Brain } = require('./brain');
 const { BeepDetector } = require('./beep');
@@ -56,7 +57,14 @@ class Session {
     this.legs = { customer: null, rep: null }; // { ws, streamSid }
 
     this.mode = MODE.CONNECTING;
-    this.fishSampleRate = Number(process.env.FISH_SAMPLE_RATE || 8000);
+    // TTS provider: 'fish' (default) or 'eleven'. Swaps the voice engine only;
+    // Brain (LLM) + Deepgram (STT) are unchanged. fishSampleRate is the output
+    // rate of whichever engine is active (used for resample-to-8k below).
+    this.ttsProvider = (process.env.TTS_PROVIDER || 'fish').toLowerCase();
+    this.fishSampleRate =
+      this.ttsProvider === 'eleven'
+        ? Number(process.env.ELEVEN_SAMPLE_RATE || 8000)
+        : Number(process.env.FISH_SAMPLE_RATE || 8000);
 
     // Audio queues feeding the ticker.
     this.aiQueue = new SampleQueue(); // AI voice -> customer
@@ -228,14 +236,14 @@ class Session {
   }
 
   _startFish() {
-    this.fish = new FishTTS();
+    this.fish = this.ttsProvider === 'eleven' ? new ElevenTTS() : new FishTTS();
     this.fish.on('audio', (pcmBuf) => {
       if (!this.acceptingAi) return; // dropped after barge-in
       let pcm = pcmBufferToInt16LE(pcmBuf);
       if (this.fishSampleRate !== 8000) pcm = resampleInt16(pcm, this.fishSampleRate, 8000);
       this.aiQueue.push(pcm);
     });
-    this.fish.on('error', (e) => this.onLog('fish error: ' + e.message));
+    this.fish.on('error', (e) => this.onLog(`${this.ttsProvider} tts error: ` + e.message));
     this.fish.connect();
   }
 
