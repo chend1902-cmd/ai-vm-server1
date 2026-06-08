@@ -92,7 +92,12 @@ app.post('/eleven/personalization', (req, res) => {
 // Point the Twilio number's Voice webhook here instead of at Eleven directly.
 const ELEVEN_INBOUND_URL =
   process.env.ELEVEN_INBOUND_URL || 'https://api.us.elevenlabs.io/twilio/inbound_call';
-const CONNECT_DIGITS = process.env.CONNECT_DIGITS ?? 'ww1';
+// 'w' = 0.5s pause in Twilio <Play digits>. VinSolutions' "press 1 to connect"
+// prompt doesn't start at exactly the same moment each call, so a single press
+// (ww1) sometimes lands outside its listening window -> no bridge -> dead air.
+// Press 1 at ~1s, ~2s, and ~3s to cover the timing variance. Extra presses after
+// the bridge are harmless DTMF.
+const CONNECT_DIGITS = process.env.CONNECT_DIGITS ?? 'ww1ww1ww1';
 
 app.post('/twilio/vinsolutions', (_req, res) => {
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
