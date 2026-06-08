@@ -51,7 +51,9 @@
 
   <h2>2 · Run a block</h2>
   <div class="card">
-    <div class="row">
+    <label class="muted">Session strategy / hook (optional) — injected into every call this block, no prompt change</label>
+    <textarea id="focus" style="min-height:60px" placeholder="e.g. These owners all have strong positive equity right now — lead with that: they can likely upgrade to something newer for a similar or lower payment. Use the equity as the hook to set the appointment."></textarea>
+    <div class="row" style="margin-top:.5rem">
       <label>Duration (min) <input id="dur" type="number" value="120" style="width:5rem"></label>
       <label>Pace /min <input id="pace" type="number" value="10" style="width:4rem"></label>
       <label>Mode <select id="mode"><option value="deeplink">deeplink</option><option value="eleven_api">eleven_api</option></select></label>
@@ -99,14 +101,22 @@ async function refreshStatus(){ try{ const d = await api('/campaign/status'); co
 } catch(e){ $('statusCard').innerHTML='<span class="muted">offline / bad secret</span>'; } }
 
 async function ingest(){ const csv=$('csv').value.trim(); if(!csv) return; $('ingestMsg').textContent='loading…'; const d=await api('/campaign/ingest',{method:'POST',body:{csv}}); $('ingestMsg').textContent = d.ok?`parsed ${d.parsed}, added ${d.added}, updated ${d.updated}, skipped ${d.skipped}`:('error: '+(d.error||'?')); refreshStatus(); }
-async function start(){ const d=await api('/campaign/start',{method:'POST',body:{durationMinutes:+$('dur').value,pacePerMinute:+$('pace').value,mode:$('mode').value,dryRun:$('dry').checked}}); log('start: '+JSON.stringify(d.status||d)); refreshStatus(); }
+async function start(){ const d=await api('/campaign/start',{method:'POST',body:{durationMinutes:+$('dur').value,pacePerMinute:+$('pace').value,mode:$('mode').value,dryRun:$('dry').checked,focus:$('focus').value.trim()}}); log('start: '+JSON.stringify(d.status||d)); refreshStatus(); }
 async function stop(){ const d=await api('/campaign/stop',{method:'POST',body:{}}); log('stopped'); refreshStatus(); }
 
-function leadCard(j){ const div=document.createElement('div'); div.className='card lead'; div.id='lead-'+j.gcid;
+const jobs = {};
+// Arm this customer's context (incl. the session strategy folded into lead_context)
+// THEN open the VinSolutions deep link — so the agent gets the right context for
+// this specific call when VinSolutions bridges it in.
+async function armAndOpen(gcid){ const j=jobs[gcid]; if(!j) return; const dv=j.dynamic_variables||{};
+  await api('/arm',{method:'POST',body:{customerName:dv.customer_name,vehicle:dv.vehicle,leadContext:dv.lead_context}});
+  log('armed '+gcid+(j.deep_link?' → opening dial':'')); if(j.deep_link) window.open(j.deep_link,'_blank','noopener'); }
+
+function leadCard(j){ jobs[j.gcid]=j; const div=document.createElement('div'); div.className='card lead'; div.id='lead-'+j.gcid;
   const dv=j.dynamic_variables||{};
   div.innerHTML = `<div class="row" style="justify-content:space-between">
       <div><b>${dv.customer_name||j.name||'(no name)'}</b> <span class="muted mono">${j.gcid}</span> <span class="muted">${j.phone||''}</span></div>
-      ${j.deep_link?`<a class="big-link" href="${j.deep_link}" target="_blank" rel="noopener">📞 Open &amp; dial in VinSolutions ↗</a>`:'<span class="muted">no deep link (set DEEPLINK_TEMPLATE)</span>'}
+      ${j.deep_link?`<a class="big-link" href="#" onclick="armAndOpen('${j.gcid}');return false;">📞 Arm &amp; dial in VinSolutions ↗</a>`:'<span class="muted">no deep link (set DEEPLINK_TEMPLATE)</span>'}
     </div>
     <p class="muted" style="margin:.4rem 0">${dv.vehicle?('<b>'+dv.vehicle+'</b> — '):''}${dv.lead_context||''}</p>
     <div class="grid">

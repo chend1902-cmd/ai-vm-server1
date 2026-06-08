@@ -39,7 +39,7 @@ function status() {
     running: C.running, mode: C.mode, dryRun: C.dryRun,
     startedAt: C.startedAt, endsAt: C.endsAt,
     pacePerMinute: C.pacePerMinute, maxCalls: C.maxCalls, launched: C.launched,
-    bucket: Math.floor(C.bucket), withinCallingHours: withinCallingHours(),
+    focus: C.focus || '', bucket: Math.floor(C.bucket), withinCallingHours: withinCallingHours(),
   };
 }
 
@@ -50,9 +50,11 @@ async function start(opts = {}) {
   const mode = opts.mode || process.env.DISPATCH_MODE || 'deeplink';
   const dryRun = opts.dryRun !== false; // DRY RUN unless explicitly false
   const maxCalls = Number(opts.maxCalls || pacePerMinute * durationMinutes);
+  // Per-session strategy/hook injected into every call's context this block only.
+  const focus = (opts.focus || '').toString().trim();
   const now = Date.now();
   C = {
-    running: true, mode, dryRun, pacePerMinute, maxCalls,
+    running: true, mode, dryRun, pacePerMinute, maxCalls, focus,
     startedAt: new Date(now).toISOString(), endsAt: new Date(now + durationMinutes * 60000).toISOString(),
     _endMs: now + durationMinutes * 60000, launched: 0, bucket: Math.min(1, pacePerMinute), timer: null,
   };
@@ -87,9 +89,13 @@ async function tick() {
 }
 
 function toJob(lead) {
+  const focus = C && C.focus ? C.focus : '';
+  // Fold the session strategy into lead_context so it reaches the agent through the
+  // existing {{lead_context}} variable — no ElevenLabs prompt change required.
+  const lead_context = (focus ? `SESSION STRATEGY — lead with this angle as the primary hook for this call: ${focus}\n\n` : '') + (lead.context || '');
   return {
     gcid: lead.gcid, name: lead.name, phone: lead.phone, deep_link: lead.deep_link,
-    dynamic_variables: { customer_name: lead.name || '', vehicle: lead.vehicle || '', lead_context: lead.context || '' },
+    dynamic_variables: { customer_name: lead.name || '', vehicle: lead.vehicle || '', lead_context },
   };
 }
 
