@@ -118,11 +118,17 @@ const ELEVEN_INBOUND_URL =
 // Press 1 at ~1s, ~2s, and ~3s to cover the timing variance. Extra presses after
 // the bridge are harmless DTMF.
 const CONNECT_DIGITS = process.env.CONNECT_DIGITS ?? 'ww1ww1ww1';
+// Wait this long AFTER pressing 1 (which triggers VinSolutions to dial the
+// customer) before handing the leg to the Eleven agent — so the agent greets
+// once the customer is actually bridged on, not into an empty bridge. Tune via
+// CONNECT_PAUSE_SEC on Render to match your typical answer time.
+const CONNECT_PAUSE = Number(process.env.CONNECT_PAUSE_SEC ?? 6);
 
 app.post('/twilio/vinsolutions', (_req, res) => {
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   ${CONNECT_DIGITS ? `<Play digits="${CONNECT_DIGITS}"/>` : ''}
+  ${CONNECT_PAUSE > 0 ? `<Pause length="${CONNECT_PAUSE}"/>` : ''}
   <Redirect method="POST">${ELEVEN_INBOUND_URL}</Redirect>
 </Response>`;
   res.type('text/xml').send(twiml);
