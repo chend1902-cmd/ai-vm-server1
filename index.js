@@ -156,25 +156,38 @@ const HEADER_ALIASES = {
   name: 'name', customername: 'name', fullname: 'name', customer: 'name',
   phone: 'phone', cell: 'phone', mobile: 'phone', phonenumber: 'phone', primaryphone: 'phone', cellphone: 'phone',
   vehicle: 'vehicle', car: 'vehicle', vehicleofinterest: 'vehicle', soldvehicle: 'vehicle', purchasedvehicle: 'vehicle',
-  context: 'context', notes: 'context', comments: 'context', history: 'context',
+  context: 'context', summary: 'context',
+  history: 'history', notes: 'history', comments: 'history', comms: 'history', communication: 'history',
+  communications: 'history', communicationlog: 'history', commlog: 'history', commshistory: 'history',
+  commhistory: 'history', communicationhistory: 'history', contacthistory: 'history', callhistory: 'history',
+  activity: 'history', activitylog: 'history', messages: 'history', messagelog: 'history', log: 'history',
   saledate: 'sale_date', solddate: 'sale_date', purchasedate: 'sale_date', date: 'sale_date',
 };
 const mapHeader = (h) => HEADER_ALIASES[String(h).toLowerCase().replace(/[^a-z0-9]/g, '')] || null;
 
-// Auto lead_context by campaign type (used when the report has no context column).
+// Auto lead_context by campaign type. A `context` column overrides the template;
+// a `history`/comms column is appended so the agent has full prior-contact context.
 function buildContext(o, type) {
-  if (o.context) return o.context;
   const v = o.vehicle ? `a ${o.vehicle}` : 'a vehicle';
-  switch (type) {
-    case 'internet_lead':
-      return `Fresh internet lead — submitted an online inquiry about ${v} and has not been contacted yet. Reach out warmly, introduce yourself, confirm they're still interested, and set a specific appointment to come see it. Don't quote price; build value in the in-person visit.`;
-    case 'no_show':
-      return `Missed a scheduled appointment to see ${v}. Be gracious — assume life got busy — and make rescheduling easy by offering a specific new time. No guilt trip.`;
-    case 'previously_sold':
-      return `Existing customer who previously purchased ${v}${o.sale_date ? ` (${o.sale_date})` : ''} from the dealership. Friendly owner follow-up — check in and gently surface any upgrade or trade opportunity. Don't quote numbers; drive to a visit or hand to sales.`;
-    default:
-      return `Lead interested in ${v}. Reach out warmly and work toward setting a specific appointment to come in. Don't quote price; build value in the visit.`;
+  let base = o.context;
+  if (!base) {
+    switch (type) {
+      case 'internet_lead':
+        base = `Fresh internet lead — submitted an online inquiry about ${v} and has not been contacted yet. Reach out warmly, introduce yourself, confirm they're still interested, and set a specific appointment to come see it. Don't quote price; build value in the in-person visit.`; break;
+      case 'no_show':
+        base = `Missed a scheduled appointment to see ${v}. Be gracious — assume life got busy — and make rescheduling easy by offering a specific new time. No guilt trip.`; break;
+      case 'previously_sold':
+        base = `Existing customer who previously purchased ${v}${o.sale_date ? ` (${o.sale_date})` : ''} from the dealership. Friendly owner follow-up — check in and gently surface any upgrade or trade opportunity. Don't quote numbers; drive to a visit or hand to sales.`; break;
+      default:
+        base = `Lead interested in ${v}. Reach out warmly and work toward setting a specific appointment to come in. Don't quote price; build value in the visit.`;
+    }
   }
+  if (o.history) {
+    // Cap to keep the context tight and within Eleven's dynamic-variable limits.
+    const hist = String(o.history).slice(0, 6000);
+    base += `\n\nPrior communication history with this customer (use it to sound informed and pick up naturally where things left off — do not read it back):\n${hist}`;
+  }
+  return base;
 }
 
 function rowsToLeads(rows, source, type) {

@@ -1,0 +1,4 @@
+Global Customer ID,Customer Name,Cell Phone,Vehicle of Interest,Comms History
+GC200001,Alex Tran,(305) 555-0231,2024 Toyota Camry SE,"2026-06-06 14:02 OUTBOUND email (auto): thanks for your inquiry on the Camry SE. 2026-06-06 18:40 INBOUND web form: 'still interested, what's availability?' 2026-06-07 09:10 OUTBOUND text: 'Hi Alex, it's available! Want to set a time to see it?' (no reply yet)"
+GC200002,Bianca Flores,786-555-0288,2023 Mazda CX-5 Touring,"2026-06-07 11:25 INBOUND lead from Cars.com on CX-5 Touring. No outbound contact made yet. Trade-in mentioned in form: 2018 Nissan Rogue."
+GC200003,Cory Dawson,3055550312,2022 Jeep Grand Cherokee Limited,"2026-06-05 OUTBOUND call: left voicemail. 2026-06-06 OUTBOUND text: 'following up on the Grand Cherokee.' 2026-06-06 INBOUND text: 'I'm comparing a few — is yours still here?'"
