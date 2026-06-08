@@ -55,12 +55,11 @@
       <span class="muted">sets the auto-context framing</span>
     </div>
     <div class="row">
-      <label>Leads CSV <input id="leadsFile" type="file" accept=".csv,text/csv"></label>
-      <label>Comms CSV (optional) <input id="commsFile" type="file" accept=".csv,text/csv"></label>
+      <label>Export files (.xlsx / .csv) <input id="files" type="file" accept=".xlsx,.xls,.csv" multiple></label>
       <button onclick="ingestFiles()">Load</button>
       <span id="ingestMsg" class="muted"></span>
     </div>
-    <p class="muted" style="margin:.5rem 0 0">Upload your leads export. Add the comms/activity sheet (as CSV) and it joins on Lead ID / Global Customer ID, aggregating messages into each lead's history. One combined CSV works too — leave Comms empty.</p>
+    <p class="muted" style="margin:.5rem 0 0">Drop your VinSolutions exports — the <b>leads</b> sheet and the <b>communication-log</b> sheet (xlsx or csv, one or more files). They auto-detect and join on Lead ID / Global Customer ID; the comms become each lead's history. No phone needed — dialing is via the GCID deep link.</p>
   </div>
 
   <h2>2 · Run a block</h2>
@@ -90,6 +89,7 @@
   <h2>Log</h2>
   <div class="card"><div id="log"></div></div>
 
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <script>
 const $ = (id) => document.getElementById(id);
 let cfg = JSON.parse(localStorage.getItem('danaCfg') || '{}');
@@ -118,25 +118,57 @@ async function refreshStatus(){ try{ const d = await api('/campaign/status'); co
 } catch(e){ $('statusCard').innerHTML='<span class="muted">offline / bad secret</span>'; } }
 
 async function loadAgents(){ try{ const a=await api('/campaign/agents'); const sel=$('agent'); if(!sel) return; sel.innerHTML=''; for(const [k,v] of Object.entries(a)){ const o=document.createElement('option'); o.value=k; o.textContent=v.label+(v.apiReady?'':' (deeplink only)'); sel.appendChild(o);} }catch(e){} }
-function readFile(input){ return new Promise((res,rej)=>{ const f=input.files[0]; if(!f){res(null);return;} const r=new FileReader(); r.onload=()=>res(r.result); r.onerror=rej; r.readAsText(f); }); }
-// Client-side CSV parser (mirrors the server's) for the comms join.
-function pcsv(t){ const rows=[];let row=[],fld='',q=false; for(let i=0;i<t.length;i++){const c=t[i]; if(q){ if(c==='"'){ if(t[i+1]==='"'){fld+='"';i++;} else q=false;} else fld+=c;} else if(c==='"')q=true; else if(c===','){row.push(fld);fld='';} else if(c==='\n'){row.push(fld);rows.push(row);row=[];fld='';} else if(c==='\r'){} else fld+=c;} if(fld.length||row.length){row.push(fld);rows.push(row);} return rows.filter(r=>r.some(x=>(x||'').trim()!=='')); }
-const _norm=h=>String(h).toLowerCase().replace(/[^a-z0-9]/g,'');
-const LMAP={gcid:'gcid',globalcustomerid:'gcid',globalcustomer:'gcid',customerid:'gcid',leadid:'leadId',lead:'leadId',name:'name',customername:'name',fullname:'name',customer:'name',phone:'phone',cell:'phone',mobile:'phone',phonenumber:'phone',cellphone:'phone',primaryphone:'phone',vehicle:'vehicle',vehicleofinterest:'vehicle',car:'vehicle',soldvehicle:'vehicle',saledate:'sale_date',solddate:'sale_date',date:'sale_date'};
-const CMAP={leadid:'leadId',lead:'leadId',gcid:'gcid',globalcustomerid:'gcid',customerid:'gcid',date:'date',datetime:'date',timestamp:'date',time:'date',created:'date',sentdate:'date',direction:'dir',type:'dir',inout:'dir',body:'body',message:'body',text:'body',note:'body',comment:'body',comments:'body',content:'body',details:'body',description:'body',activity:'body'};
-function rowsToObjs(rows,map){ if(rows.length<2)return[]; const hs=rows[0].map(h=>map[_norm(h)]||null); const out=[]; for(let i=1;i<rows.length;i++){const o={};hs.forEach((k,idx)=>{if(k&&!(k in o))o[k]=(rows[i][idx]||'').trim();});out.push(o);} return out; }
+// Parse an uploaded workbook/CSV into [{sheet, rows:[obj...]}] with raw headers (SheetJS).
+async function parseWorkbook(file){
+  const csv = /\.csv$/i.test(file.name);
+  const data = csv ? await file.text() : await file.arrayBuffer();
+  const wb = XLSX.read(data, { type: csv ? 'string' : 'array' });
+  return wb.SheetNames.map(sn => ({ sheet: sn, rows: XLSX.utils.sheet_to_json(wb.Sheets[sn], { defval:'', raw:false }) }));
+}
+const _norm = h => String(h).toLowerCase().replace(/[^a-z0-9]/g,'');
+function pick(obj, keys){ for(const k of Object.keys(obj)){ if(keys.includes(_norm(k))) return obj[k]; } return ''; }
+// Auto-detect a sheet as the leads list vs the communication log by its columns.
+function classify(rows){ if(!rows.length) return null; const ks=Object.keys(rows[0]).map(_norm);
+  if(ks.includes('messagecontent')||(ks.includes('direction')&&ks.includes('activitydate'))) return 'comms';
+  if(ks.includes('leadid')&&ks.includes('globalcustomerid')) return 'leads';
+  return null; }
+function leadObj(r){
+  let vehicle = pick(r,['vehicle','vehicleofinterest']);
+  if(!vehicle){ vehicle=[pick(r,['year']),pick(r,['make']),pick(r,['model'])].map(x=>String(x).trim()).filter(Boolean).join(' '); }
+  return {
+    gcid:String(pick(r,['globalcustomerid','gcid','customerid'])).trim(),
+    leadId:String(pick(r,['leadid'])).trim(),
+    name:String(pick(r,['customer','customername','name','fullname'])).trim(),
+    vehicle:vehicle.trim(),
+    phone:String(pick(r,['phone','cell','mobile','phonenumber','cellphone','primaryphone'])).trim(),
+  };
+}
+function commObj(r){
+  return {
+    gcid:String(pick(r,['globalcustomerid','gcid','customerid'])).trim(),
+    leadId:String(pick(r,['leadid'])).trim(),
+    date:String(pick(r,['activitydate','date','datetime','timestamp','time'])).trim(),
+    dir:String(pick(r,['direction','inout'])).trim(),
+    channel:String(pick(r,['commchannel','channel','commtype'])).trim(),
+    body:String(pick(r,['messagecontent','message','body','text','note','comment'])).replace(/\s+/g,' ').trim(),
+  };
+}
 async function ingestFiles(){
-  const lt=await readFile($('leadsFile')); if(!lt){ $('ingestMsg').textContent='choose a Leads CSV'; return; }
-  $('ingestMsg').textContent='loading…';
-  const ct=await readFile($('commsFile'));
-  if(!ct){ const d=await api('/campaign/ingest',{method:'POST',body:{csv:lt,type:$('ltype').value}}); $('ingestMsg').textContent=d.ok?`parsed ${d.parsed}, added ${d.added}, updated ${d.updated}, skipped ${d.skipped}`:('error: '+(d.error||'?')); refreshStatus(); return; }
-  const leads=rowsToObjs(pcsv(lt),LMAP), comms=rowsToObjs(pcsv(ct),CMAP);
+  const fs=$('files').files; if(!fs||!fs.length){ $('ingestMsg').textContent='choose your export file(s)'; return; }
+  if(typeof XLSX==='undefined'){ $('ingestMsg').textContent='spreadsheet parser still loading — try again in a moment'; return; }
+  $('ingestMsg').textContent='parsing…';
+  let leadRows=[], commRows=[];
+  try{ for(const f of fs){ for(const s of await parseWorkbook(f)){ const k=classify(s.rows); if(k==='leads') leadRows.push(...s.rows); else if(k==='comms') commRows.push(...s.rows); } } }
+  catch(e){ $('ingestMsg').textContent='parse error: '+e.message; return; }
+  if(!leadRows.length){ $('ingestMsg').textContent='no leads sheet found (need Lead ID + Global Customer ID columns)'; return; }
+  const leads=leadRows.map(leadObj).filter(l=>l.gcid);
+  const comms=commRows.map(commObj);
   const byKey={}; for(const c of comms){ const k=c.leadId||c.gcid; if(!k)continue; (byKey[k]=byKey[k]||[]).push(c); }
-  const fmt=c=>`${c.date||''} ${(c.dir||'').toUpperCase()}${c.dir?':':''} ${c.body||''}`.replace(/\s+/g,' ').trim();
   let withHist=0;
-  for(const l of leads){ const k=l.leadId||l.gcid; const cs=byKey[k]; if(cs&&cs.length){ cs.sort((a,b)=>String(a.date).localeCompare(String(b.date))); l.history=cs.map(fmt).join('\n'); withHist++; } }
+  for(const l of leads){ const cs=byKey[l.leadId]||byKey[l.gcid]; if(cs&&cs.length){ cs.sort((a,b)=>(Date.parse(a.date)||0)-(Date.parse(b.date)||0)); l.history=cs.map(c=>`${c.date} ${c.dir.toUpperCase()}${c.channel?'/'+c.channel:''}: ${c.body}`.trim()).join('\n'); withHist++; } }
   const d=await api('/campaign/ingest',{method:'POST',body:{leads,type:$('ltype').value}});
-  $('ingestMsg').textContent=d.ok?`${leads.length} leads (${withHist} w/ history from ${comms.length} comms rows) → added ${d.added}, updated ${d.updated}, skipped ${d.skipped}`:('error: '+(d.error||'?')); refreshStatus();
+  $('ingestMsg').textContent=d.ok?`${leads.length} leads (${withHist} w/ history from ${comms.length} comms) → added ${d.added}, updated ${d.updated}, skipped ${d.skipped}`:('error: '+(d.error||'?'));
+  refreshStatus();
 }
 async function start(){ const d=await api('/campaign/start',{method:'POST',body:{agent:$('agent').value,durationMinutes:+$('dur').value,pacePerMinute:+$('pace').value,mode:$('mode').value,dryRun:$('dry').checked,focus:$('focus').value.trim()}}); log('start: '+JSON.stringify(d.status||d)); refreshStatus(); }
 async function stop(){ const d=await api('/campaign/stop',{method:'POST',body:{}}); log('stopped'); refreshStatus(); }
