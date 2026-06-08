@@ -17,6 +17,7 @@
 // initiation data" webhook -> https://<this-host>/eleven/personalization
 
 require('dotenv').config();
+const path = require('path');
 const express = require('express');
 
 const { PORT = 3000, SHARED_SECRET = '', WEBHOOK_SECRET = '' } = process.env;
@@ -30,6 +31,10 @@ app.use(express.urlencoded({ extended: false }));
 let armed = null;
 
 app.get('/', (_req, res) => res.send('Eleven lead-context webhook up'));
+
+// Browser simulator: embeds the ElevenLabs ConvAI widget so you can talk to the
+// live agent (Jake) with no phone. Faithful to what's on the Twilio line.
+app.get('/sim', (_req, res) => res.sendFile(path.join(__dirname, 'sim.html')));
 
 // ---- Arm the next call's lead context (called by the browser extension) ----
 app.post('/arm', (req, res) => {
