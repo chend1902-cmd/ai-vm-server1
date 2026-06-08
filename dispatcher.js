@@ -39,7 +39,7 @@ function status() {
     running: C.running, mode: C.mode, dryRun: C.dryRun,
     startedAt: C.startedAt, endsAt: C.endsAt,
     pacePerMinute: C.pacePerMinute, maxCalls: C.maxCalls, launched: C.launched,
-    focus: C.focus || '', bucket: Math.floor(C.bucket), withinCallingHours: withinCallingHours(),
+    agent: C.agentLabel || '', focus: C.focus || '', bucket: Math.floor(C.bucket), withinCallingHours: withinCallingHours(),
   };
 }
 
@@ -52,14 +52,19 @@ async function start(opts = {}) {
   const maxCalls = Number(opts.maxCalls || pacePerMinute * durationMinutes);
   // Per-session strategy/hook injected into every call's context this block only.
   const focus = (opts.focus || '').toString().trim();
+  // Which agent this campaign dials as (eleven_api mode). deeplink mode routes by
+  // the dialed number instead, so this is informational there.
+  const agentId = opts.agentId || process.env.DANA_AGENT_ID || null;
+  const phoneNumberId = opts.phoneNumberId || process.env.DANA_PHONE_NUMBER_ID || null;
+  const agentLabel = opts.agentLabel || opts.agent || null;
   const now = Date.now();
   C = {
-    running: true, mode, dryRun, pacePerMinute, maxCalls, focus,
+    running: true, mode, dryRun, pacePerMinute, maxCalls, focus, agentId, phoneNumberId, agentLabel,
     startedAt: new Date(now).toISOString(), endsAt: new Date(now + durationMinutes * 60000).toISOString(),
     _endMs: now + durationMinutes * 60000, launched: 0, bucket: Math.min(1, pacePerMinute), timer: null,
   };
   C.timer = setInterval(() => tick().catch((e) => console.error('[dispatch] tick error', e.message)), TICK_MS);
-  console.log(`[dispatch] start mode=${mode} dryRun=${dryRun} pace=${pacePerMinute}/min cap=${maxCalls} window=${durationMinutes}min`);
+  console.log(`[dispatch] start agent=${agentLabel || '(deeplink-routed)'} mode=${mode} dryRun=${dryRun} pace=${pacePerMinute}/min cap=${maxCalls} window=${durationMinutes}min`);
   tick().catch((e) => console.error('[dispatch] tick error', e.message)); // prime the bucket / dispatch immediately
   return status();
 }
@@ -113,8 +118,8 @@ async function next(max = 5) {
 }
 
 async function dispatchEleven(lead) {
-  const agentId = process.env.DANA_AGENT_ID;
-  const phoneId = process.env.DANA_PHONE_NUMBER_ID;
+  const agentId = C.agentId;
+  const phoneId = C.phoneNumberId;
   const key = process.env.ELEVEN_API_KEY;
   if (C.dryRun || !agentId || !phoneId || !key || !lead.phone) {
     console.log(`[dispatch][DRY] call ${lead.name || lead.gcid} ${lead.phone || '(no phone)'} | ${(lead.context || '').slice(0, 80)}`);

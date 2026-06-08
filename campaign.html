@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Dana — Outbound Campaign Console</title>
+<title>Outbound Campaign Console</title>
 <style>
   :root { color-scheme: dark; }
   * { box-sizing: border-box; }
@@ -29,7 +29,7 @@
 </style>
 </head>
 <body>
-  <h1>Dana — Outbound Campaign Console</h1>
+  <h1>Outbound Campaign Console</h1>
 
   <div class="card">
     <div class="row">
@@ -45,7 +45,16 @@
 
   <h2>1 · Load report (CSV)</h2>
   <div class="card">
-    <textarea id="csv" placeholder="Paste the previously-sold report CSV (must include a Global Customer ID column)…"></textarea>
+    <div class="row" style="margin-bottom:.5rem"><label>Lead type
+      <select id="ltype">
+        <option value="internet_lead">Internet lead (uncontacted)</option>
+        <option value="previously_sold">Previously sold (owner)</option>
+        <option value="no_show">No-show / missed appt</option>
+        <option value="generic">Generic</option>
+      </select></label>
+      <span class="muted">sets the auto-context framing for this batch</span>
+    </div>
+    <textarea id="csv" placeholder="Paste the report CSV (must include a Global Customer ID column)…"></textarea>
     <div class="row" style="margin-top:.5rem"><button onclick="ingest()">Load into worklist</button><span id="ingestMsg" class="muted"></span></div>
   </div>
 
@@ -54,6 +63,7 @@
     <label class="muted">Session strategy / hook (optional) — injected into every call this block, no prompt change</label>
     <textarea id="focus" style="min-height:60px" placeholder="e.g. These owners all have strong positive equity right now — lead with that: they can likely upgrade to something newer for a similar or lower payment. Use the equity as the hook to set the appointment."></textarea>
     <div class="row" style="margin-top:.5rem">
+      <label>Agent <select id="agent"></select></label>
       <label>Duration (min) <input id="dur" type="number" value="120" style="width:5rem"></label>
       <label>Pace /min <input id="pace" type="number" value="10" style="width:4rem"></label>
       <label>Mode <select id="mode"><option value="deeplink">deeplink</option><option value="eleven_api">eleven_api</option></select></label>
@@ -80,7 +90,7 @@ const $ = (id) => document.getElementById(id);
 let cfg = JSON.parse(localStorage.getItem('danaCfg') || '{}');
 $('server').value = cfg.server || location.origin;
 $('secret').value = cfg.secret || '';
-function saveCfg(){ cfg = { server: $('server').value.replace(/\/$/,''), secret: $('secret').value }; localStorage.setItem('danaCfg', JSON.stringify(cfg)); $('cfgok').textContent = 'saved'; setTimeout(()=>$('cfgok').textContent='',1500); }
+function saveCfg(){ cfg = { server: $('server').value.replace(/\/$/,''), secret: $('secret').value }; localStorage.setItem('danaCfg', JSON.stringify(cfg)); $('cfgok').textContent = 'saved'; setTimeout(()=>$('cfgok').textContent='',1500); loadAgents(); }
 if(!cfg.server){ saveCfg(); }
 function log(m){ $('log').textContent = '['+new Date().toLocaleTimeString()+'] '+m+'\n'+$('log').textContent; }
 async function api(path, opts={}){ const url = cfg.server + path + (opts.method==='GET'||!opts.method ? (path.includes('?')?'&':'?')+'secret='+encodeURIComponent(cfg.secret) : ''); const r = await fetch(url, { method: opts.method||'GET', headers: opts.body?{'Content-Type':'application/json'}:{}, body: opts.body?JSON.stringify({secret:cfg.secret, ...opts.body}):undefined }); return r.json().catch(()=>({})); }
@@ -88,10 +98,12 @@ async function api(path, opts={}){ const url = cfg.server + path + (opts.method=
 async function refreshStatus(){ try{ const d = await api('/campaign/status'); const s=d.status||{}; const st=d.stats||{}; const by=st.byStatus||{};
   $('statusCard').innerHTML = `<div class="row">
     <span class="pill">${s.running?'🟢 running':'⚪ idle'}</span>
+    ${s.agent?`<span class="pill">👤 ${s.agent}</span>`:''}
     <span class="pill">mode: ${s.mode||'—'}</span>
     <span class="pill">${s.dryRun?'DRY RUN':'LIVE'}</span>
     <span class="pill">pace ${s.pacePerMinute||0}/min</span>
     <span class="pill">launched ${s.launched||0}/${s.maxCalls||0}</span>
+    ${s.focus?'<span class="pill">🎯 strategy on</span>':''}
     <span class="pill">${s.withinCallingHours===false?'⏸ outside hours':'calling hours ok'}</span>
   </div><div class="row" style="margin-top:.4rem">
     <span class="pill">total ${st.total||0}</span>
@@ -100,8 +112,9 @@ async function refreshStatus(){ try{ const d = await api('/campaign/status'); co
   </div>`;
 } catch(e){ $('statusCard').innerHTML='<span class="muted">offline / bad secret</span>'; } }
 
-async function ingest(){ const csv=$('csv').value.trim(); if(!csv) return; $('ingestMsg').textContent='loading…'; const d=await api('/campaign/ingest',{method:'POST',body:{csv}}); $('ingestMsg').textContent = d.ok?`parsed ${d.parsed}, added ${d.added}, updated ${d.updated}, skipped ${d.skipped}`:('error: '+(d.error||'?')); refreshStatus(); }
-async function start(){ const d=await api('/campaign/start',{method:'POST',body:{durationMinutes:+$('dur').value,pacePerMinute:+$('pace').value,mode:$('mode').value,dryRun:$('dry').checked,focus:$('focus').value.trim()}}); log('start: '+JSON.stringify(d.status||d)); refreshStatus(); }
+async function loadAgents(){ try{ const a=await api('/campaign/agents'); const sel=$('agent'); if(!sel) return; sel.innerHTML=''; for(const [k,v] of Object.entries(a)){ const o=document.createElement('option'); o.value=k; o.textContent=v.label+(v.apiReady?'':' (deeplink only)'); sel.appendChild(o);} }catch(e){} }
+async function ingest(){ const csv=$('csv').value.trim(); if(!csv) return; $('ingestMsg').textContent='loading…'; const d=await api('/campaign/ingest',{method:'POST',body:{csv,type:$('ltype').value}}); $('ingestMsg').textContent = d.ok?`parsed ${d.parsed}, added ${d.added}, updated ${d.updated}, skipped ${d.skipped}`:('error: '+(d.error||'?')); refreshStatus(); }
+async function start(){ const d=await api('/campaign/start',{method:'POST',body:{agent:$('agent').value,durationMinutes:+$('dur').value,pacePerMinute:+$('pace').value,mode:$('mode').value,dryRun:$('dry').checked,focus:$('focus').value.trim()}}); log('start: '+JSON.stringify(d.status||d)); refreshStatus(); }
 async function stop(){ const d=await api('/campaign/stop',{method:'POST',body:{}}); log('stopped'); refreshStatus(); }
 
 const jobs = {};
@@ -134,6 +147,7 @@ async function result(gcid,status){ await api('/campaign/result',{method:'POST',
 async function callback(gcid){ const next=new Date(Date.now()+2*864e5).toISOString(); await api('/campaign/result',{method:'POST',body:{gcid,status:'queued',outcome:'callback',nextTouchAt:next}}); const el=$('lead-'+gcid); if(el){el.style.opacity=.4; el.querySelectorAll('button').forEach(b=>b.disabled=true);} log(gcid+' → callback +2d'); refreshStatus(); }
 async function suppress(gcid){ await api('/campaign/suppress',{method:'POST',body:{gcid,reason:'opt_out'}}); const el=$('lead-'+gcid); if(el){el.style.opacity=.4; el.querySelectorAll('button').forEach(b=>b.disabled=true);} log(gcid+' → opted out'); refreshStatus(); }
 
+loadAgents();
 setInterval(refreshStatus, 5000); refreshStatus();
 setInterval(()=>{ if($('auto').checked) getNext(); }, 6000);
 </script>

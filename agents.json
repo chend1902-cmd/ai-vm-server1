@@ -1,0 +1,30 @@
+{
+  "jake": {
+    "label": "Jake — Sales Closer",
+    "agentId": "agent_7401ktjd33pcemevm8m9w87k6e91",
+    "phoneNumberId": "phnum_4101ktjnfqm1fyzsvr84a0ebfbj2",
+    "leadTypes": ["internet_lead", "no_show", "generic"],
+    "notes": "On +15615565075 — deep-link campaigns route here by default."
+  },
+  "dana": {
+    "label": "Dana — Follow-up / Equity",
+    "agentId": null,
+    "phoneNumberId": null,
+    "leadTypes": ["previously_sold", "no_show", "generic"],
+    "notes": "Needs her own number/agent before eleven_api mode or distinct deep-link routing."
+  },
+  "tara": {
+    "label": "Tara — Trade-In",
+    "agentId": null,
+    "phoneNumberId": null,
+    "leadTypes": ["generic"],
+    "notes": "Specialist — usually reached via transfer, not standalone campaigns."
+  },
+  "casey": {
+    "label": "Casey — Speed-to-Lead (text)",
+    "agentId": null,
+    "phoneNumberId": null,
+    "leadTypes": ["internet_lead"],
+    "notes": "Text/SMS channel; outbound via Twilio messaging, not voice dialing."
+  }
+}
