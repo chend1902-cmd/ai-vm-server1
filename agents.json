@@ -2,9 +2,9 @@
   "jake": {
     "label": "Jake — Sales Closer",
     "agentId": "agent_7401ktjd33pcemevm8m9w87k6e91",
-    "phoneNumberId": "phnum_4101ktjnfqm1fyzsvr84a0ebfbj2",
+    "phoneNumberId": "phnum_8601ktmasypyeg8b3vbemcpmvxym",
     "leadTypes": ["internet_lead", "no_show", "generic"],
-    "notes": "On +15615565075 — deep-link campaigns route here by default."
+    "notes": "Dials direct via ElevenLabs outbound from +15615565075 (eleven_api mode)."
   },
   "dana": {
     "label": "Dana — Follow-up / Equity",

@@ -102,37 +102,8 @@ app.post('/eleven/personalization', (req, res) => {
   res.json(payload);
 });
 
-// ---- VinSolutions click-to-call shim ----
-// VinSolutions rings this number and plays a "press 1 to connect" prompt before
-// it bridges the customer in. ElevenLabs' native integration just answers and
-// never presses 1, so the customer never gets bridged (dead air). We own the
-// webhook instead: press 1 (ww1 = wait, wait, send "1"), then hand the now-
-// bridged call straight to the Eleven agent's native inbound endpoint.
-//
-// Point the Twilio number's Voice webhook here instead of at Eleven directly.
-const ELEVEN_INBOUND_URL =
-  process.env.ELEVEN_INBOUND_URL || 'https://api.elevenlabs.io/twilio/inbound_call';
-// 'w' = 0.5s pause in Twilio <Play digits>. VinSolutions' "press 1 to connect"
-// prompt doesn't start at exactly the same moment each call, so a single press
-// (ww1) sometimes lands outside its listening window -> no bridge -> dead air.
-// Press 1 at ~1s, ~2s, and ~3s to cover the timing variance. Extra presses after
-// the bridge are harmless DTMF.
-const CONNECT_DIGITS = process.env.CONNECT_DIGITS ?? 'ww1ww1ww1';
-// Wait this long AFTER pressing 1 (which triggers VinSolutions to dial the
-// customer) before handing the leg to the Eleven agent — so the agent greets
-// once the customer is actually bridged on, not into an empty bridge. Tune via
-// CONNECT_PAUSE_SEC on Render to match your typical answer time.
-const CONNECT_PAUSE = Number(process.env.CONNECT_PAUSE_SEC ?? 0);
-
-app.post('/twilio/vinsolutions', (_req, res) => {
-  const twiml = `<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  ${CONNECT_DIGITS ? `<Play digits="${CONNECT_DIGITS}"/>` : ''}
-  ${CONNECT_PAUSE > 0 ? `<Pause length="${CONNECT_PAUSE}"/>` : ''}
-  <Redirect method="POST">${ELEVEN_INBOUND_URL}</Redirect>
-</Response>`;
-  res.type('text/xml').send(twiml);
-});
+// (VinSolutions press-1 click-to-call shim removed — campaigns now dial customers
+// directly via ElevenLabs outbound, which greets on answer with no bridge/press-1.)
 
 // ========================================================================
 // Outbound campaign (Dana): report CSV -> worklist -> paced dispatcher
