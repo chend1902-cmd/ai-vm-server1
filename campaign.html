@@ -140,7 +140,7 @@ function leadObj(r){
     leadId:String(pick(r,['leadid'])).trim(),
     name:String(pick(r,['customer','customername','name','fullname'])).trim(),
     vehicle:vehicle.trim(),
-    phone:String(pick(r,['phone','cell','mobile','phonenumber','cellphone','primaryphone'])).trim(),
+    phone:String(pick(r,['cellphone','cell','mobile'])||pick(r,['phone','phonenumber','primaryphone'])||pick(r,['daytimephone','eveningphone'])).trim(),
   };
 }
 function commObj(r){
