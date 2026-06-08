@@ -122,7 +122,7 @@ const CONNECT_DIGITS = process.env.CONNECT_DIGITS ?? 'ww1ww1ww1';
 // customer) before handing the leg to the Eleven agent — so the agent greets
 // once the customer is actually bridged on, not into an empty bridge. Tune via
 // CONNECT_PAUSE_SEC on Render to match your typical answer time.
-const CONNECT_PAUSE = Number(process.env.CONNECT_PAUSE_SEC ?? 6);
+const CONNECT_PAUSE = Number(process.env.CONNECT_PAUSE_SEC ?? 0);
 
 app.post('/twilio/vinsolutions', (_req, res) => {
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
