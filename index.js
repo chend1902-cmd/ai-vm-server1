@@ -207,7 +207,7 @@ function normalizeJsonLead(o, type) {
   const gcid = o.gcid || o.globalCustomerId || o.global_customer_id || o.customerId;
   return {
     gcid, name: o.name || o.customerName, phone: o.phone, vehicle: o.vehicle,
-    context: o.context || buildContext({ vehicle: o.vehicle, sale_date: o.saleDate || o.sale_date }, type),
+    context: buildContext({ vehicle: o.vehicle, sale_date: o.saleDate || o.sale_date, context: o.context, history: o.history }, type),
     situation: type, source: o.source || 'json',
   };
 }

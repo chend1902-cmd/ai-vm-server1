@@ -43,7 +43,7 @@
   <h2>Status</h2>
   <div class="card" id="statusCard"><span class="muted">—</span></div>
 
-  <h2>1 · Load report (CSV)</h2>
+  <h2>1 · Load report</h2>
   <div class="card">
     <div class="row" style="margin-bottom:.5rem"><label>Lead type
       <select id="ltype">
@@ -52,10 +52,15 @@
         <option value="no_show">No-show / missed appt</option>
         <option value="generic">Generic</option>
       </select></label>
-      <span class="muted">sets the auto-context framing for this batch</span>
+      <span class="muted">sets the auto-context framing</span>
     </div>
-    <textarea id="csv" placeholder="Paste the report CSV (must include a Global Customer ID column)…"></textarea>
-    <div class="row" style="margin-top:.5rem"><button onclick="ingest()">Load into worklist</button><span id="ingestMsg" class="muted"></span></div>
+    <div class="row">
+      <label>Leads CSV <input id="leadsFile" type="file" accept=".csv,text/csv"></label>
+      <label>Comms CSV (optional) <input id="commsFile" type="file" accept=".csv,text/csv"></label>
+      <button onclick="ingestFiles()">Load</button>
+      <span id="ingestMsg" class="muted"></span>
+    </div>
+    <p class="muted" style="margin:.5rem 0 0">Upload your leads export. Add the comms/activity sheet (as CSV) and it joins on Lead ID / Global Customer ID, aggregating messages into each lead's history. One combined CSV works too — leave Comms empty.</p>
   </div>
 
   <h2>2 · Run a block</h2>
@@ -113,7 +118,26 @@ async function refreshStatus(){ try{ const d = await api('/campaign/status'); co
 } catch(e){ $('statusCard').innerHTML='<span class="muted">offline / bad secret</span>'; } }
 
 async function loadAgents(){ try{ const a=await api('/campaign/agents'); const sel=$('agent'); if(!sel) return; sel.innerHTML=''; for(const [k,v] of Object.entries(a)){ const o=document.createElement('option'); o.value=k; o.textContent=v.label+(v.apiReady?'':' (deeplink only)'); sel.appendChild(o);} }catch(e){} }
-async function ingest(){ const csv=$('csv').value.trim(); if(!csv) return; $('ingestMsg').textContent='loading…'; const d=await api('/campaign/ingest',{method:'POST',body:{csv,type:$('ltype').value}}); $('ingestMsg').textContent = d.ok?`parsed ${d.parsed}, added ${d.added}, updated ${d.updated}, skipped ${d.skipped}`:('error: '+(d.error||'?')); refreshStatus(); }
+function readFile(input){ return new Promise((res,rej)=>{ const f=input.files[0]; if(!f){res(null);return;} const r=new FileReader(); r.onload=()=>res(r.result); r.onerror=rej; r.readAsText(f); }); }
+// Client-side CSV parser (mirrors the server's) for the comms join.
+function pcsv(t){ const rows=[];let row=[],fld='',q=false; for(let i=0;i<t.length;i++){const c=t[i]; if(q){ if(c==='"'){ if(t[i+1]==='"'){fld+='"';i++;} else q=false;} else fld+=c;} else if(c==='"')q=true; else if(c===','){row.push(fld);fld='';} else if(c==='\n'){row.push(fld);rows.push(row);row=[];fld='';} else if(c==='\r'){} else fld+=c;} if(fld.length||row.length){row.push(fld);rows.push(row);} return rows.filter(r=>r.some(x=>(x||'').trim()!=='')); }
+const _norm=h=>String(h).toLowerCase().replace(/[^a-z0-9]/g,'');
+const LMAP={gcid:'gcid',globalcustomerid:'gcid',globalcustomer:'gcid',customerid:'gcid',leadid:'leadId',lead:'leadId',name:'name',customername:'name',fullname:'name',customer:'name',phone:'phone',cell:'phone',mobile:'phone',phonenumber:'phone',cellphone:'phone',primaryphone:'phone',vehicle:'vehicle',vehicleofinterest:'vehicle',car:'vehicle',soldvehicle:'vehicle',saledate:'sale_date',solddate:'sale_date',date:'sale_date'};
+const CMAP={leadid:'leadId',lead:'leadId',gcid:'gcid',globalcustomerid:'gcid',customerid:'gcid',date:'date',datetime:'date',timestamp:'date',time:'date',created:'date',sentdate:'date',direction:'dir',type:'dir',inout:'dir',body:'body',message:'body',text:'body',note:'body',comment:'body',comments:'body',content:'body',details:'body',description:'body',activity:'body'};
+function rowsToObjs(rows,map){ if(rows.length<2)return[]; const hs=rows[0].map(h=>map[_norm(h)]||null); const out=[]; for(let i=1;i<rows.length;i++){const o={};hs.forEach((k,idx)=>{if(k&&!(k in o))o[k]=(rows[i][idx]||'').trim();});out.push(o);} return out; }
+async function ingestFiles(){
+  const lt=await readFile($('leadsFile')); if(!lt){ $('ingestMsg').textContent='choose a Leads CSV'; return; }
+  $('ingestMsg').textContent='loading…';
+  const ct=await readFile($('commsFile'));
+  if(!ct){ const d=await api('/campaign/ingest',{method:'POST',body:{csv:lt,type:$('ltype').value}}); $('ingestMsg').textContent=d.ok?`parsed ${d.parsed}, added ${d.added}, updated ${d.updated}, skipped ${d.skipped}`:('error: '+(d.error||'?')); refreshStatus(); return; }
+  const leads=rowsToObjs(pcsv(lt),LMAP), comms=rowsToObjs(pcsv(ct),CMAP);
+  const byKey={}; for(const c of comms){ const k=c.leadId||c.gcid; if(!k)continue; (byKey[k]=byKey[k]||[]).push(c); }
+  const fmt=c=>`${c.date||''} ${(c.dir||'').toUpperCase()}${c.dir?':':''} ${c.body||''}`.replace(/\s+/g,' ').trim();
+  let withHist=0;
+  for(const l of leads){ const k=l.leadId||l.gcid; const cs=byKey[k]; if(cs&&cs.length){ cs.sort((a,b)=>String(a.date).localeCompare(String(b.date))); l.history=cs.map(fmt).join('\n'); withHist++; } }
+  const d=await api('/campaign/ingest',{method:'POST',body:{leads,type:$('ltype').value}});
+  $('ingestMsg').textContent=d.ok?`${leads.length} leads (${withHist} w/ history from ${comms.length} comms rows) → added ${d.added}, updated ${d.updated}, skipped ${d.skipped}`:('error: '+(d.error||'?')); refreshStatus();
+}
 async function start(){ const d=await api('/campaign/start',{method:'POST',body:{agent:$('agent').value,durationMinutes:+$('dur').value,pacePerMinute:+$('pace').value,mode:$('mode').value,dryRun:$('dry').checked,focus:$('focus').value.trim()}}); log('start: '+JSON.stringify(d.status||d)); refreshStatus(); }
 async function stop(){ const d=await api('/campaign/stop',{method:'POST',body:{}}); log('stopped'); refreshStatus(); }
 
