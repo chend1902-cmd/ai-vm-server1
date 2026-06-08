@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Dana — Outbound Campaign Console</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: #0b0d12; color: #e6e9ef; padding: 1.5rem; max-width: 960px; margin: 0 auto; }
+  h1 { font-size: 1.3rem; margin: 0 0 1rem; }
+  h2 { font-size: .95rem; text-transform: uppercase; letter-spacing: .05em; color: #8b93a7; margin: 1.5rem 0 .5rem; }
+  .card { background: #141821; border: 1px solid #232a38; border-radius: 10px; padding: 1rem; margin-bottom: .75rem; }
+  input, textarea, select, button { font: inherit; }
+  input, textarea, select { background: #0f131b; border: 1px solid #2a3344; color: #e6e9ef; border-radius: 7px; padding: .5rem .6rem; }
+  textarea { width: 100%; min-height: 110px; font-family: ui-monospace, monospace; font-size: 12px; }
+  button { background: #2563eb; border: 0; color: #fff; border-radius: 7px; padding: .5rem .9rem; cursor: pointer; }
+  button.secondary { background: #2a3344; }
+  button.green { background: #059669; } button.red { background: #dc2626; } button.amber { background: #b45309; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  .row { display: flex; gap: .5rem; flex-wrap: wrap; align-items: center; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(90px,1fr)); gap: .5rem; }
+  .pill { display: inline-block; background: #1c2230; border: 1px solid #2a3344; border-radius: 999px; padding: .15rem .6rem; font-size: 12px; margin: .1rem; }
+  .muted { color: #8b93a7; } .mono { font-family: ui-monospace, monospace; }
+  a { color: #60a5fa; } .big-link { font-size: 1.05rem; font-weight: 600; }
+  .lead { border-left: 3px solid #059669; }
+  #log { font-family: ui-monospace, monospace; font-size: 12px; color: #8b93a7; white-space: pre-wrap; max-height: 140px; overflow: auto; }
+</style>
+</head>
+<body>
+  <h1>Dana — Outbound Campaign Console</h1>
+
+  <div class="card">
+    <div class="row">
+      <label>Server <input id="server" size="34" placeholder="https://ai-vm-server1.onrender.com" /></label>
+      <label>Secret <input id="secret" type="password" size="18" /></label>
+      <button class="secondary" onclick="saveCfg()">Save</button>
+      <span id="cfgok" class="muted"></span>
+    </div>
+  </div>
+
+  <h2>Status</h2>
+  <div class="card" id="statusCard"><span class="muted">—</span></div>
+
+  <h2>1 · Load report (CSV)</h2>
+  <div class="card">
+    <textarea id="csv" placeholder="Paste the previously-sold report CSV (must include a Global Customer ID column)…"></textarea>
+    <div class="row" style="margin-top:.5rem"><button onclick="ingest()">Load into worklist</button><span id="ingestMsg" class="muted"></span></div>
+  </div>
+
+  <h2>2 · Run a block</h2>
+  <div class="card">
+    <div class="row">
+      <label>Duration (min) <input id="dur" type="number" value="120" style="width:5rem"></label>
+      <label>Pace /min <input id="pace" type="number" value="10" style="width:4rem"></label>
+      <label>Mode <select id="mode"><option value="deeplink">deeplink</option><option value="eleven_api">eleven_api</option></select></label>
+      <label><input id="dry" type="checkbox" checked> dry run</label>
+      <button class="green" onclick="start()">▶ Start</button>
+      <button class="red" onclick="stop()">■ Stop</button>
+    </div>
+    <p class="muted" style="margin:.5rem 0 0">Dry run = no calls; deep links still appear so you can preview. Uncheck to go live.</p>
+  </div>
+
+  <h2>3 · Work the queue</h2>
+  <div class="card">
+    <div class="row"><button onclick="getNext()">Get next customer →</button>
+      <label><input id="auto" type="checkbox"> auto-pull</label>
+      <span class="muted">Click the deep link → dial in VinSolutions → then mark the outcome.</span></div>
+  </div>
+  <div id="queue"></div>
+
+  <h2>Log</h2>
+  <div class="card"><div id="log"></div></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let cfg = JSON.parse(localStorage.getItem('danaCfg') || '{}');
+$('server').value = cfg.server || location.origin;
+$('secret').value = cfg.secret || '';
+function saveCfg(){ cfg = { server: $('server').value.replace(/\/$/,''), secret: $('secret').value }; localStorage.setItem('danaCfg', JSON.stringify(cfg)); $('cfgok').textContent = 'saved'; setTimeout(()=>$('cfgok').textContent='',1500); }
+if(!cfg.server){ saveCfg(); }
+function log(m){ $('log').textContent = '['+new Date().toLocaleTimeString()+'] '+m+'\n'+$('log').textContent; }
+async function api(path, opts={}){ const url = cfg.server + path + (opts.method==='GET'||!opts.method ? (path.includes('?')?'&':'?')+'secret='+encodeURIComponent(cfg.secret) : ''); const r = await fetch(url, { method: opts.method||'GET', headers: opts.body?{'Content-Type':'application/json'}:{}, body: opts.body?JSON.stringify({secret:cfg.secret, ...opts.body}):undefined }); return r.json().catch(()=>({})); }
+
+async function refreshStatus(){ try{ const d = await api('/campaign/status'); const s=d.status||{}; const st=d.stats||{}; const by=st.byStatus||{};
+  $('statusCard').innerHTML = `<div class="row">
+    <span class="pill">${s.running?'🟢 running':'⚪ idle'}</span>
+    <span class="pill">mode: ${s.mode||'—'}</span>
+    <span class="pill">${s.dryRun?'DRY RUN':'LIVE'}</span>
+    <span class="pill">pace ${s.pacePerMinute||0}/min</span>
+    <span class="pill">launched ${s.launched||0}/${s.maxCalls||0}</span>
+    <span class="pill">${s.withinCallingHours===false?'⏸ outside hours':'calling hours ok'}</span>
+  </div><div class="row" style="margin-top:.4rem">
+    <span class="pill">total ${st.total||0}</span>
+    ${Object.entries(by).map(([k,v])=>`<span class="pill">${k}: ${v}</span>`).join('')}
+    <span class="pill">suppressed ${st.suppressed||0}</span>
+  </div>`;
+} catch(e){ $('statusCard').innerHTML='<span class="muted">offline / bad secret</span>'; } }
+
+async function ingest(){ const csv=$('csv').value.trim(); if(!csv) return; $('ingestMsg').textContent='loading…'; const d=await api('/campaign/ingest',{method:'POST',body:{csv}}); $('ingestMsg').textContent = d.ok?`parsed ${d.parsed}, added ${d.added}, updated ${d.updated}, skipped ${d.skipped}`:('error: '+(d.error||'?')); refreshStatus(); }
+async function start(){ const d=await api('/campaign/start',{method:'POST',body:{durationMinutes:+$('dur').value,pacePerMinute:+$('pace').value,mode:$('mode').value,dryRun:$('dry').checked}}); log('start: '+JSON.stringify(d.status||d)); refreshStatus(); }
+async function stop(){ const d=await api('/campaign/stop',{method:'POST',body:{}}); log('stopped'); refreshStatus(); }
+
+function leadCard(j){ const div=document.createElement('div'); div.className='card lead'; div.id='lead-'+j.gcid;
+  const dv=j.dynamic_variables||{};
+  div.innerHTML = `<div class="row" style="justify-content:space-between">
+      <div><b>${dv.customer_name||j.name||'(no name)'}</b> <span class="muted mono">${j.gcid}</span> <span class="muted">${j.phone||''}</span></div>
+      ${j.deep_link?`<a class="big-link" href="${j.deep_link}" target="_blank" rel="noopener">📞 Open &amp; dial in VinSolutions ↗</a>`:'<span class="muted">no deep link (set DEEPLINK_TEMPLATE)</span>'}
+    </div>
+    <p class="muted" style="margin:.4rem 0">${dv.vehicle?('<b>'+dv.vehicle+'</b> — '):''}${dv.lead_context||''}</p>
+    <div class="grid">
+      <button class="green" onclick="result('${j.gcid}','booked')">Booked</button>
+      <button class="secondary" onclick="result('${j.gcid}','no_answer')">No answer</button>
+      <button class="secondary" onclick="result('${j.gcid}','voicemail')">Voicemail</button>
+      <button class="secondary" onclick="result('${j.gcid}','not_interested')">Not interested</button>
+      <button class="amber" onclick="callback('${j.gcid}')">Callback +2d</button>
+      <button class="red" onclick="suppress('${j.gcid}')">Opt out</button>
+    </div>`;
+  return div; }
+
+async function getNext(){ const d=await api('/campaign/next?max=1'); if(d.paused){ log('paused: '+d.paused); return; } (d.leads||[]).forEach(j=>$('queue').prepend(leadCard(j))); if(!(d.leads||[]).length) log('nothing due yet (paced)'); refreshStatus(); }
+async function result(gcid,status){ await api('/campaign/result',{method:'POST',body:{gcid,status}}); const el=$('lead-'+gcid); if(el){ el.style.opacity=.4; el.querySelectorAll('button').forEach(b=>b.disabled=true);} log(gcid+' → '+status); refreshStatus(); }
+async function callback(gcid){ const next=new Date(Date.now()+2*864e5).toISOString(); await api('/campaign/result',{method:'POST',body:{gcid,status:'queued',outcome:'callback',nextTouchAt:next}}); const el=$('lead-'+gcid); if(el){el.style.opacity=.4; el.querySelectorAll('button').forEach(b=>b.disabled=true);} log(gcid+' → callback +2d'); refreshStatus(); }
+async function suppress(gcid){ await api('/campaign/suppress',{method:'POST',body:{gcid,reason:'opt_out'}}); const el=$('lead-'+gcid); if(el){el.style.opacity=.4; el.querySelectorAll('button').forEach(b=>b.disabled=true);} log(gcid+' → opted out'); refreshStatus(); }
+
+setInterval(refreshStatus, 5000); refreshStatus();
+setInterval(()=>{ if($('auto').checked) getNext(); }, 6000);
+</script>
+</body>
+</html>

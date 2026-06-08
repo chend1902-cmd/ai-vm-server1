@@ -46,6 +46,9 @@ app.get('/', (_req, res) => res.send('Eleven lead-context webhook up'));
 // live agent (Jake) with no phone. Faithful to what's on the Twilio line.
 app.get('/sim', (_req, res) => res.sendFile(path.join(__dirname, 'sim.html')));
 
+// Outbound campaign operator console (run a block by hand: paced deep links + outcomes).
+app.get('/campaign', (_req, res) => res.sendFile(path.join(__dirname, 'campaign.html')));
+
 // ---- Arm the next call's lead context (called by the browser extension) ----
 app.post('/arm', (req, res) => {
   if (SHARED_SECRET && req.body.secret !== SHARED_SECRET) {

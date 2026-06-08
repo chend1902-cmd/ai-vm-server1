@@ -180,6 +180,24 @@ async function suppress({ gcid, phone }, reason) {
   return hit;
 }
 
+// Requeue contacts stuck in 'dialing' (claimed but no result reported) past a
+// timeout — so an abandoned tab/worker doesn't strand them forever.
+async function requeueStale(minutes = 10) {
+  if (USE_PG) {
+    const r = await pool.query(
+      `UPDATE worklist SET status='queued', updated_at=now()
+       WHERE status='dialing' AND last_dispatched_at < now() - ($1 || ' minutes')::interval RETURNING gcid`,
+      [String(minutes)]
+    );
+    return r.rowCount;
+  }
+  const cutoff = Date.now() - minutes * 60000; let n = 0;
+  for (const r of mem.values()) {
+    if (r.status === 'dialing' && r.last_dispatched_at && r.last_dispatched_at.getTime() < cutoff) { r.status = 'queued'; r.updated_at = new Date(); n++; }
+  }
+  return n;
+}
+
 // Look up a contact's GCID by phone (post-call webhook matching).
 async function gcidForPhone(phone) {
   const p = normalizePhone(phone) || phone;
@@ -205,4 +223,4 @@ async function stats() {
   return { total: mem.size, byStatus, suppressed };
 }
 
-module.exports = { init, normalizePhone, buildDeepLink, upsertLead, claimDue, recordOutcome, suppress, stats, gcidForPhone };
+module.exports = { init, normalizePhone, buildDeepLink, upsertLead, claimDue, recordOutcome, suppress, stats, gcidForPhone, requeueStale };

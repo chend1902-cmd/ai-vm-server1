@@ -54,7 +54,7 @@ async function start(opts = {}) {
   C = {
     running: true, mode, dryRun, pacePerMinute, maxCalls,
     startedAt: new Date(now).toISOString(), endsAt: new Date(now + durationMinutes * 60000).toISOString(),
-    _endMs: now + durationMinutes * 60000, launched: 0, bucket: 0, timer: null,
+    _endMs: now + durationMinutes * 60000, launched: 0, bucket: Math.min(1, pacePerMinute), timer: null,
   };
   C.timer = setInterval(() => tick().catch((e) => console.error('[dispatch] tick error', e.message)), TICK_MS);
   console.log(`[dispatch] start mode=${mode} dryRun=${dryRun} pace=${pacePerMinute}/min cap=${maxCalls} window=${durationMinutes}min`);
@@ -72,6 +72,8 @@ function stop(reason = 'manual') {
 async function tick() {
   if (!C || !C.running) return;
   if (Date.now() >= C._endMs) return void stop('window_complete');
+  // Rescue contacts stuck in 'dialing' (claimed but never reported back).
+  await db.requeueStale(Number(process.env.DIALING_TIMEOUT_MIN || 10)).catch(() => {});
   // refill the pacing bucket (burst capped at ~1 minute of pace)
   C.bucket = Math.min(C.pacePerMinute, C.bucket + C.pacePerMinute * (TICK_MS / 60000));
   if (!withinCallingHours()) return;        // paused outside legal hours (window still counts down)
