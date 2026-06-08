@@ -22,6 +22,7 @@ const SCHEMA = `
 CREATE TABLE IF NOT EXISTS worklist (
   id bigserial PRIMARY KEY,
   gcid text UNIQUE NOT NULL,
+  lead_id text,
   phone text,
   deep_link text,
   name text,
@@ -56,13 +57,17 @@ function normalizePhone(raw) {
   return null;
 }
 
-// Build the 1-click VinSolutions dial deep link from the GCID.
-// Set DEEPLINK_TEMPLATE with a {gcid} placeholder, e.g.
-//   https://apps.vinsolutions.com/.../customer/{gcid}/dial
-function buildDeepLink(gcid) {
-  const tpl = process.env.DEEPLINK_TEMPLATE;
-  if (!tpl || !gcid) return null;
-  return tpl.replace(/\{gcid\}/g, encodeURIComponent(gcid));
+// Build the 1-click VinSolutions "Log Call" deep link. Default is the real
+// VinSolutions LogCallV2 URL (needs AutoLeadID + GlobalCustomerID); override with
+// DEEPLINK_TEMPLATE using {leadId} and {gcid} placeholders.
+const DEFAULT_DEEPLINK =
+  'https://vinsolutions.app.coxautoinc.com/CarDashboard/Pages/LeadManagement/LogCallV2/LogCallV2.aspx?AutoLeadID={leadId}&GlobalCustomerID={gcid}&V2Redirect=2';
+function buildDeepLink(gcid, leadId) {
+  if (!gcid && !leadId) return null;
+  const tpl = process.env.DEEPLINK_TEMPLATE || DEFAULT_DEEPLINK;
+  return tpl
+    .replace(/\{gcid\}/gi, encodeURIComponent(gcid || ''))
+    .replace(/\{leadid\}/gi, encodeURIComponent(leadId || ''));
 }
 
 // Insert or refresh a contact (dedup on GCID). Re-uploading a report re-queues
@@ -70,10 +75,12 @@ function buildDeepLink(gcid) {
 async function upsertLead(lead) {
   const gcid = (lead.gcid || '').toString().trim();
   if (!gcid) return 'skipped';
+  const leadId = (lead.leadId || lead.lead_id || '').toString().trim() || null;
   const row = {
     gcid,
+    lead_id: leadId,
     phone: normalizePhone(lead.phone),
-    deep_link: lead.deep_link || buildDeepLink(gcid),
+    deep_link: lead.deep_link || buildDeepLink(gcid, leadId),
     name: lead.name || null,
     vehicle: lead.vehicle || null,
     context: lead.context || null,
@@ -83,9 +90,10 @@ async function upsertLead(lead) {
 
   if (USE_PG) {
     const r = await pool.query(
-      `INSERT INTO worklist (gcid, phone, deep_link, name, vehicle, context, situation, source)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+      `INSERT INTO worklist (gcid, lead_id, phone, deep_link, name, vehicle, context, situation, source)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
        ON CONFLICT (gcid) DO UPDATE SET
+         lead_id = COALESCE(EXCLUDED.lead_id, worklist.lead_id),
          phone = COALESCE(EXCLUDED.phone, worklist.phone),
          deep_link = COALESCE(EXCLUDED.deep_link, worklist.deep_link),
          name = COALESCE(EXCLUDED.name, worklist.name),
@@ -98,7 +106,7 @@ async function upsertLead(lead) {
          next_touch_at = CASE WHEN worklist.suppressed THEN worklist.next_touch_at ELSE now() END,
          updated_at = now()
        RETURNING (xmax = 0) AS inserted`,
-      [row.gcid, row.phone, row.deep_link, row.name, row.vehicle, row.context, row.situation, row.source]
+      [row.gcid, row.lead_id, row.phone, row.deep_link, row.name, row.vehicle, row.context, row.situation, row.source]
     );
     return r.rows[0].inserted ? 'added' : 'updated';
   }
@@ -106,6 +114,7 @@ async function upsertLead(lead) {
   const existing = mem.get(gcid);
   if (existing) {
     Object.assign(existing, {
+      lead_id: row.lead_id ?? existing.lead_id,
       phone: row.phone ?? existing.phone,
       deep_link: row.deep_link ?? existing.deep_link,
       name: row.name ?? existing.name,

@@ -27,8 +27,8 @@ try { AGENTS = require('./agents.json'); } catch { /* no agent registry */ }
 const { PORT = 3000, SHARED_SECRET = '', WEBHOOK_SECRET = '' } = process.env;
 
 const app = express();
-app.use(express.json());
-app.use(express.urlencoded({ extended: false }));
+app.use(express.json({ limit: '25mb' })); // big lead batches (full comms history per lead)
+app.use(express.urlencoded({ extended: false, limit: '25mb' }));
 app.use(express.text({ type: ['text/csv', 'text/plain'], limit: '10mb' }));
 
 // Secret check for campaign endpoints (accepts body.secret or ?secret=).
@@ -153,6 +153,7 @@ function parseCsv(text) {
 
 const HEADER_ALIASES = {
   gcid: 'gcid', globalcustomerid: 'gcid', globalcustomer: 'gcid', customerid: 'gcid', gcustomerid: 'gcid',
+  leadid: 'leadId', autoleadid: 'leadId', lead: 'leadId',
   name: 'name', customername: 'name', fullname: 'name', customer: 'name',
   phone: 'phone', cell: 'phone', mobile: 'phone', phonenumber: 'phone', primaryphone: 'phone', cellphone: 'phone',
   vehicle: 'vehicle', car: 'vehicle', vehicleofinterest: 'vehicle', soldvehicle: 'vehicle', purchasedvehicle: 'vehicle',
@@ -198,7 +199,7 @@ function rowsToLeads(rows, source, type) {
     const o = {};
     headers.forEach((key, idx) => { if (key) o[key] = (rows[i][idx] || '').trim(); });
     if (!o.gcid) continue;
-    out.push({ gcid: o.gcid, name: o.name, phone: o.phone, vehicle: o.vehicle, context: buildContext(o, type), situation: type, source });
+    out.push({ gcid: o.gcid, leadId: o.leadId, name: o.name, phone: o.phone, vehicle: o.vehicle, context: buildContext(o, type), situation: type, source });
   }
   return out;
 }
@@ -206,7 +207,8 @@ function rowsToLeads(rows, source, type) {
 function normalizeJsonLead(o, type) {
   const gcid = o.gcid || o.globalCustomerId || o.global_customer_id || o.customerId;
   return {
-    gcid, name: o.name || o.customerName, phone: o.phone, vehicle: o.vehicle,
+    gcid, leadId: o.leadId || o.lead_id || o.leadID || o.autoLeadId,
+    name: o.name || o.customerName, phone: o.phone, vehicle: o.vehicle,
     context: buildContext({ vehicle: o.vehicle, sale_date: o.saleDate || o.sale_date, context: o.context, history: o.history }, type),
     situation: type, source: o.source || 'json',
   };

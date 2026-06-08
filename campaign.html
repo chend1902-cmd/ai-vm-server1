@@ -147,6 +147,7 @@ function commObj(r){
   return {
     gcid:String(pick(r,['globalcustomerid','gcid','customerid'])).trim(),
     leadId:String(pick(r,['leadid'])).trim(),
+    name:String(pick(r,['customer','customername','name'])).trim(),
     date:String(pick(r,['activitydate','date','datetime','timestamp','time'])).trim(),
     dir:String(pick(r,['direction','inout'])).trim(),
     channel:String(pick(r,['commchannel','channel','commtype'])).trim(),
@@ -160,14 +161,16 @@ async function ingestFiles(){
   let leadRows=[], commRows=[];
   try{ for(const f of fs){ for(const s of await parseWorkbook(f)){ const k=classify(s.rows); if(k==='leads') leadRows.push(...s.rows); else if(k==='comms') commRows.push(...s.rows); } } }
   catch(e){ $('ingestMsg').textContent='parse error: '+e.message; return; }
-  if(!leadRows.length){ $('ingestMsg').textContent='no leads sheet found (need Lead ID + Global Customer ID columns)'; return; }
+  if(!leadRows.length){ $('ingestMsg').textContent='no leads sheet found (need the active-leads export: Lead ID + Global Customer ID)'; return; }
+  const fmtComm=c=>`${c.date} ${c.dir.toUpperCase()}${c.channel?'/'+c.channel:''}: ${c.body}`.trim();
+  // Worklist = the active leads (report 2). Enrich each with its comms history
+  // (report 1) for the agent's background. Leads with no comms stay in (fresh leads).
   const leads=leadRows.map(leadObj).filter(l=>l.gcid);
-  const comms=commRows.map(commObj);
-  const byKey={}; for(const c of comms){ const k=c.leadId||c.gcid; if(!k)continue; (byKey[k]=byKey[k]||[]).push(c); }
+  const byKey={}; for(const c of commRows.map(commObj)){ const k=c.leadId||c.gcid; if(!k)continue; (byKey[k]=byKey[k]||[]).push(c); }
   let withHist=0;
-  for(const l of leads){ const cs=byKey[l.leadId]||byKey[l.gcid]; if(cs&&cs.length){ cs.sort((a,b)=>(Date.parse(a.date)||0)-(Date.parse(b.date)||0)); l.history=cs.map(c=>`${c.date} ${c.dir.toUpperCase()}${c.channel?'/'+c.channel:''}: ${c.body}`.trim()).join('\n'); withHist++; } }
+  for(const l of leads){ const cs=byKey[l.leadId]||byKey[l.gcid]; if(cs&&cs.length){ cs.sort((a,b)=>(Date.parse(a.date)||0)-(Date.parse(b.date)||0)); l.history=cs.map(fmtComm).join('\n'); withHist++; } }
   const d=await api('/campaign/ingest',{method:'POST',body:{leads,type:$('ltype').value}});
-  $('ingestMsg').textContent=d.ok?`${leads.length} leads (${withHist} w/ history from ${comms.length} comms) → added ${d.added}, updated ${d.updated}, skipped ${d.skipped}`:('error: '+(d.error||'?'));
+  $('ingestMsg').textContent=d.ok?`${leads.length} active leads (${withHist} enriched w/ comms from ${commRows.length} rows) → added ${d.added}, updated ${d.updated}, skipped ${d.skipped}`:('error: '+(d.error||'?'));
   refreshStatus();
 }
 async function start(){ const d=await api('/campaign/start',{method:'POST',body:{agent:$('agent').value,durationMinutes:+$('dur').value,pacePerMinute:+$('pace').value,mode:$('mode').value,dryRun:$('dry').checked,focus:$('focus').value.trim()}}); log('start: '+JSON.stringify(d.status||d)); refreshStatus(); }
