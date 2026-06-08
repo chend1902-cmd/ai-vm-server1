@@ -82,4 +82,25 @@ app.post('/eleven/personalization', (req, res) => {
   res.json(payload);
 });
 
+// ---- VinSolutions click-to-call shim ----
+// VinSolutions rings this number and plays a "press 1 to connect" prompt before
+// it bridges the customer in. ElevenLabs' native integration just answers and
+// never presses 1, so the customer never gets bridged (dead air). We own the
+// webhook instead: press 1 (ww1 = wait, wait, send "1"), then hand the now-
+// bridged call straight to the Eleven agent's native inbound endpoint.
+//
+// Point the Twilio number's Voice webhook here instead of at Eleven directly.
+const ELEVEN_INBOUND_URL =
+  process.env.ELEVEN_INBOUND_URL || 'https://api.us.elevenlabs.io/twilio/inbound_call';
+const CONNECT_DIGITS = process.env.CONNECT_DIGITS ?? 'ww1';
+
+app.post('/twilio/vinsolutions', (_req, res) => {
+  const twiml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  ${CONNECT_DIGITS ? `<Play digits="${CONNECT_DIGITS}"/>` : ''}
+  <Redirect method="POST">${ELEVEN_INBOUND_URL}</Redirect>
+</Response>`;
+  res.type('text/xml').send(twiml);
+});
+
 app.listen(PORT, () => console.log(`lead-context webhook listening on ${PORT}`));
