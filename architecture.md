@@ -21,6 +21,55 @@ access. Out-of-lane requests `transfer_to_agent` / `transfer_to_number` — they
 improvise. Topology is hub-and-spoke: Riley routes; Casey/Dana feed Jake; everyone
 escalates to a human via `transfer_to_number`.
 
+## Workflow & per-agent tools
+
+Renders as a flow chart on GitHub / any Mermaid-aware markdown viewer. **Legend:**
+`→agent` = transfer to another agent · `☎` = transfer to a human ·
+`tool` = server tool to a data system · `KB` = knowledge base · `webhook` = personalization.
+
+```mermaid
+flowchart TD
+    IN(["☎ Inbound call"]):::entry
+    LEAD(["💬 New web lead"]):::entry
+    WL(["📋 Outbound worklist<br/>(DB-backed)"]):::entry
+
+    RILEY["<b>RILEY — Front Desk / Router</b> · voice<br/>———————<br/>→agent: Jake, Tara<br/>☎ human: Service, Manager<br/>system: end_call<br/>webhook: personalization<br/><i>no KB</i>"]:::agent
+    CASEY["<b>CASEY — Speed-to-Lead</b> · text/SMS<br/>———————<br/>→agent: Jake, Tara<br/>tool: VinSolutions (log activity, W)<br/>webhook: personalization<br/><i>no KB</i>"]:::agent
+    JAKE["<b>JAKE — Sales Closer ★</b> · voice+text<br/>———————<br/>→agent: Tara<br/>☎ human: Manager (warm handoff)<br/>tool: vAuto (availability, R)<br/>tool: VinSolutions (book appt+notes, W)<br/>KB: sales / CPO / financing<br/>webhook: personalization"]:::agent
+    TARA["<b>TARA — Trade-In &amp; Appraisal</b> · voice+text<br/>———————<br/>→agent: Jake<br/>☎ human: Manager<br/>tool: vAuto (appraisal R/W — internal)<br/>tool: VinSolutions (book appraisal, W)<br/>KB: trade-in FAQ<br/>webhook: personalization"]:::agent
+    DANA["<b>DANA — Follow-up / Equity</b> · text+voice, out<br/>———————<br/>→agent: Jake, Tara<br/>☎ human: Manager<br/>tool: DB (worklist/cadence/suppression)<br/>tool: Xtime (equity, R)<br/>tool: VinSolutions (history R, appt W)<br/>webhook: personalization · <i>no KB</i>"]:::agent
+
+    APPT(["📅 Booked appointment"]):::done
+    MGR(["☎ Manager / human"]):::human
+
+    IN --> RILEY
+    LEAD --> CASEY
+    WL --> DANA
+
+    RILEY -->|buying| JAKE
+    RILEY -->|trade| TARA
+    RILEY -->|service / other| MGR
+    CASEY -->|warm lead| JAKE
+    CASEY -->|trade question| TARA
+    DANA -->|re-engaged| JAKE
+    DANA -->|trade value| TARA
+    JAKE <-->|buy / trade cross-refer| TARA
+    JAKE --> APPT
+    TARA --> APPT
+    JAKE -.warm handoff.-> MGR
+    TARA -.escalate.-> MGR
+    DANA -.escalate.-> MGR
+
+    classDef entry stroke:#2563eb,stroke-width:2px
+    classDef agent stroke:#059669,stroke-width:2px
+    classDef done stroke:#059669,stroke-width:3px
+    classDef human stroke:#dc2626,stroke-width:2px
+```
+
+Note: tools beyond `end_call` / transfers are **gated on Cox scraping access** (see
+below) — the agents work today on transfers + personalization; data tools light up as
+each scraper lands.
+
 ## Two integration surfaces (per agent)
 
 1. **Context-in (conversation start)** — ElevenLabs conversation-initiation
