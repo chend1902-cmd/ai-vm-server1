@@ -19,12 +19,22 @@
 require('dotenv').config();
 const path = require('path');
 const express = require('express');
+const db = require('./db');
+const dispatcher = require('./dispatcher');
 
 const { PORT = 3000, SHARED_SECRET = '', WEBHOOK_SECRET = '' } = process.env;
 
 const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
+app.use(express.text({ type: ['text/csv', 'text/plain'], limit: '10mb' }));
+
+// Secret check for campaign endpoints (accepts body.secret or ?secret=).
+function badSecret(req) {
+  if (!SHARED_SECRET) return false;
+  const s = (req.body && typeof req.body === 'object' && req.body.secret) || req.query.secret;
+  return s !== SHARED_SECRET;
+}
 
 // Lead context for the NEXT Eleven-handled call. Overwritten by each /arm.
 // In-memory and single-slot — matches the one-call-at-a-time dialer workflow.
@@ -113,4 +123,144 @@ app.post('/twilio/vinsolutions', (_req, res) => {
   res.type('text/xml').send(twiml);
 });
 
-app.listen(PORT, () => console.log(`lead-context webhook listening on ${PORT}`));
+// ========================================================================
+// Outbound campaign (Dana): report CSV -> worklist -> paced dispatcher
+// ========================================================================
+
+// Minimal RFC-ish CSV parser (handles quoted fields, commas, CRLF).
+function parseCsv(text) {
+  const rows = [];
+  let row = [], field = '', inQ = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inQ) {
+      if (c === '"') { if (text[i + 1] === '"') { field += '"'; i++; } else inQ = false; }
+      else field += c;
+    } else if (c === '"') inQ = true;
+    else if (c === ',') { row.push(field); field = ''; }
+    else if (c === '\n') { row.push(field); rows.push(row); row = []; field = ''; }
+    else if (c === '\r') { /* skip */ }
+    else field += c;
+  }
+  if (field.length || row.length) { row.push(field); rows.push(row); }
+  return rows.filter((r) => r.some((x) => (x || '').trim() !== ''));
+}
+
+const HEADER_ALIASES = {
+  gcid: 'gcid', globalcustomerid: 'gcid', globalcustomer: 'gcid', customerid: 'gcid', gcustomerid: 'gcid',
+  name: 'name', customername: 'name', fullname: 'name', customer: 'name',
+  phone: 'phone', cell: 'phone', mobile: 'phone', phonenumber: 'phone', primaryphone: 'phone', cellphone: 'phone',
+  vehicle: 'vehicle', car: 'vehicle', vehicleofinterest: 'vehicle', soldvehicle: 'vehicle', purchasedvehicle: 'vehicle',
+  context: 'context', notes: 'context', comments: 'context', history: 'context',
+  saledate: 'sale_date', solddate: 'sale_date', purchasedate: 'sale_date', date: 'sale_date',
+};
+const mapHeader = (h) => HEADER_ALIASES[String(h).toLowerCase().replace(/[^a-z0-9]/g, '')] || null;
+
+// Default lead_context for a previously-sold owner follow-up.
+function buildContext(o) {
+  if (o.context) return o.context;
+  const v = o.vehicle ? `a ${o.vehicle}` : 'a vehicle';
+  const d = o.sale_date ? ` (${o.sale_date})` : '';
+  return `Existing customer who previously purchased ${v}${d} from the dealership. This is a friendly owner follow-up — check in on how they're enjoying it and gently surface any upgrade or trade opportunity. Don't quote numbers; drive to a visit or hand to the sales team.`;
+}
+
+function rowsToLeads(rows, source) {
+  if (rows.length < 2) return [];
+  const headers = rows[0].map(mapHeader);
+  const out = [];
+  for (let i = 1; i < rows.length; i++) {
+    const o = {};
+    headers.forEach((key, idx) => { if (key) o[key] = (rows[i][idx] || '').trim(); });
+    if (!o.gcid) continue;
+    out.push({ gcid: o.gcid, name: o.name, phone: o.phone, vehicle: o.vehicle, context: buildContext(o), situation: 'previously_sold_followup', source });
+  }
+  return out;
+}
+
+function normalizeJsonLead(o) {
+  const gcid = o.gcid || o.globalCustomerId || o.global_customer_id || o.customerId;
+  return {
+    gcid, name: o.name || o.customerName, phone: o.phone, vehicle: o.vehicle,
+    context: o.context || buildContext({ vehicle: o.vehicle, sale_date: o.saleDate || o.sale_date }),
+    situation: 'previously_sold_followup', source: o.source || 'json',
+  };
+}
+
+// Load a report into the worklist. Accepts JSON { leads:[...] } or { csv:"..." }
+// or a raw text/csv body (with ?secret=).
+app.post('/campaign/ingest', async (req, res) => {
+  if (badSecret(req)) return res.status(401).json({ ok: false, error: 'bad secret' });
+  try {
+    let leads = [];
+    if (req.body && Array.isArray(req.body.leads)) leads = req.body.leads.map(normalizeJsonLead);
+    else {
+      const csvText = (req.body && req.body.csv) || (typeof req.body === 'string' ? req.body : '');
+      if (!csvText) return res.status(400).json({ ok: false, error: 'provide leads[] or csv text' });
+      leads = rowsToLeads(parseCsv(csvText), (req.body && req.body.source) || 'csv:report');
+    }
+    let added = 0, updated = 0, skipped = 0;
+    for (const l of leads) { const r = await db.upsertLead(l); r === 'added' ? added++ : r === 'updated' ? updated++ : skipped++; }
+    res.json({ ok: true, parsed: leads.length, added, updated, skipped, stats: await db.stats() });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+app.post('/campaign/start', async (req, res) => {
+  if (badSecret(req)) return res.status(401).json({ ok: false, error: 'bad secret' });
+  try { res.json({ ok: true, status: await dispatcher.start(req.body || {}), stats: await db.stats() }); }
+  catch (e) { res.status(409).json({ ok: false, error: e.message }); }
+});
+
+app.post('/campaign/stop', (req, res) => {
+  if (badSecret(req)) return res.status(401).json({ ok: false, error: 'bad secret' });
+  res.json({ ok: true, status: dispatcher.stop('manual') });
+});
+
+app.get('/campaign/status', async (req, res) => {
+  if (badSecret(req)) return res.status(401).json({ ok: false, error: 'bad secret' });
+  res.json({ status: dispatcher.status(), stats: await db.stats() });
+});
+
+// Browser worker pulls the next paced batch of due contacts (deeplink mode).
+app.get('/campaign/next', async (req, res) => {
+  if (badSecret(req)) return res.status(401).json({ error: 'bad secret' });
+  try { res.json(await dispatcher.next(req.query.max || 5)); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Worker reports a call's outcome back to the worklist.
+app.post('/campaign/result', async (req, res) => {
+  if (badSecret(req)) return res.status(401).json({ ok: false, error: 'bad secret' });
+  const { gcid, status, outcome, nextTouchAt } = req.body || {};
+  if (!gcid || !status) return res.status(400).json({ ok: false, error: 'gcid and status required' });
+  await db.recordOutcome(gcid, { status, outcome, nextTouchAt: nextTouchAt ? new Date(nextTouchAt) : null });
+  res.json({ ok: true });
+});
+
+app.post('/campaign/suppress', async (req, res) => {
+  if (badSecret(req)) return res.status(401).json({ ok: false, error: 'bad secret' });
+  const { gcid, phone, reason } = req.body || {};
+  if (!gcid && !phone) return res.status(400).json({ ok: false, error: 'gcid or phone required' });
+  res.json({ ok: await db.suppress({ gcid, phone }, reason || 'manual') });
+});
+
+// ElevenLabs post-call webhook (best-effort): close the loop on outcomes + opt-outs.
+app.post('/eleven/postcall', async (req, res) => {
+  try {
+    const b = req.body || {};
+    console.log('[postcall] raw:', JSON.stringify(b).slice(0, 800));
+    const data = b.data || b;
+    const pc = (data.metadata && data.metadata.phone_call) || {};
+    const phone = pc.external_number || pc.to_number || null;
+    const success = data.analysis ? data.analysis.call_successful : undefined;
+    const optOut = /\b(stop|do ?not ?call|don'?t call|take me off|remove me|unsubscribe)\b/i.test(JSON.stringify(data.transcript || ''));
+    const gcid = phone ? await db.gcidForPhone(phone) : null;
+    if (gcid) {
+      if (optOut) await db.suppress({ gcid }, 'opt_out_on_call');
+      else await db.recordOutcome(gcid, { status: 'completed', outcome: typeof success === 'string' ? success : success === true ? 'success' : 'completed' });
+    }
+  } catch (e) { console.error('[postcall]', e.message); }
+  res.sendStatus(200);
+});
+
+db.init().catch((e) => console.error('[db] init error:', e.message));
+app.listen(PORT, () => console.log(`lead-context webhook + campaign dispatcher listening on ${PORT}`));
