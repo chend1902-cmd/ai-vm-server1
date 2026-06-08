@@ -93,6 +93,23 @@ Notes:
   to leave a brief message (or hang up) so she's not pitching dead air.
 - Exact labels vary slightly in the Eleven dashboard.
 
+### Transfer map (who hands to whom)
+
+| Agent | `transfer_to_agent` | `transfer_to_number` |
+|---|---|---|
+| **Riley** (Front Desk) | Jake (buying), Tara (trade) | Service dept, Manager |
+| **Jake** (Sales Closer) | Tara (trade) | Manager (warm handoff) |
+| **Casey** (Speed-to-Lead · text) | Jake (warm lead), Tara (trade) | — (text → escalate via CRM thread) |
+| **Tara** (Trade-In) | Jake (ready to buy) | Manager |
+| **Dana** (Follow-up / Equity) | Jake (re-engaged), Tara (trade value) | Manager |
+
+Destinations:
+- **Manager line:** `+13052900693`
+- **Service dept:** _(your service number — not yet provided)_
+- **Jake's agent ID** (for the pickers): `agent_7401ktjd33pcemevm8m9w87k6e91`
+- Create all five agents first, then set the `transfer_to_agent` links — the picker only
+  lists agents that already exist.
+
 ## Two integration surfaces (per agent)
 
 1. **Context-in (conversation start)** — ElevenLabs conversation-initiation
