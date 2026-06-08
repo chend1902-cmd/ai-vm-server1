@@ -70,6 +70,29 @@ Note: tools beyond `end_call` / transfers are **gated on Cox scraping access** (
 below) — the agents work today on transfers + personalization; data tools light up as
 each scraper lands.
 
+### ElevenLabs system tools (built-in) per agent
+
+These are Eleven's built-in **system tools** — distinct from the *server tools*
+(vAuto / VinSolutions / Xtime / DB) in the chart, which are our own custom webhooks.
+✓ = enable · — = off · opt = optional / market-dependent.
+
+| System tool | Riley | Jake | Casey | Tara | Dana | Why |
+|---|:-:|:-:|:-:|:-:|:-:|---|
+| `end_call` | ✓ | ✓ | ✓ | ✓ | ✓ | End gracefully when the conversation's done |
+| `transfer_to_agent` | ✓ | ✓ | ✓ | ✓ | ✓ | Hand to the right specialist agent |
+| `transfer_to_number` | ✓ | ✓ | — | ✓ | ✓ | Escalate to a human (voice). Casey is text → escalate via CRM thread assignment |
+| `skip_turn` | ✓ | ✓ | — | ✓ | ✓ | Stay quiet when the caller says "hold on" (voice naturalness) |
+| `voicemail_detection` | — | opt | — | — | ✓ | Outbound only — Dana hits voicemails constantly; leave a message or hang up |
+| `play_keypad_touch_tone` (DTMF) | — | — | — | — | opt | Only to navigate a phone menu on an outbound transfer |
+| `language_detection` | opt | opt | opt | opt | opt | Turn on per market (e.g., Spanish-speaking customers) |
+
+Notes:
+- **Text channels (Casey, Dana-via-SMS):** `transfer_to_number` and `skip_turn` are
+  voice constructs; on SMS, "escalate to a human" = assign the thread to a rep in the CRM.
+- **Dana:** `voicemail_detection` is effectively required — she's outbound; configure it
+  to leave a brief message (or hang up) so she's not pitching dead air.
+- Exact labels vary slightly in the Eleven dashboard.
+
 ## Two integration surfaces (per agent)
 
 1. **Context-in (conversation start)** — ElevenLabs conversation-initiation
