@@ -6,6 +6,15 @@ agents and brokers reads/writes to the dealership's Cox systems. Phone calls rea
 the agents via Twilio (Eleven native integration + a VinSolutions press-1 shim at
 `/twilio/vinsolutions`).
 
+> **UPDATE (2026-06-08) — see `HANDOFF.md` for current state.** Dialing **switched from the
+> VinSolutions deep-link / press-1 bridge to direct ElevenLabs outbound** (`eleven_api`);
+> the shim was **removed**. Eleven dials the customer directly and the agent greets on answer
+> (`voicemail_detection` + empty `first_message` handle machines vs. humans). Direct dial
+> needs a **phone column** (`Cell Phone`) in the export. New UI: **`/agents`** — a
+> one-widget-per-agent dashboard (placeholder avatar, one-line summary, "Start calls" with a
+> desired count; text-only agents show no phone control). The deep-link / scraping notes
+> below are retained for reference but are not the active dialing path.
+
 ## The agent stack (5, concurrent, single-responsibility)
 
 | # | Agent | Channel | Core purpose | Hard scope limit (transfers out) |

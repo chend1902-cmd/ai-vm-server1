@@ -1,30 +1,47 @@
 {
+  "riley": {
+    "label": "Riley — Front Desk / Router",
+    "agentId": null,
+    "phoneNumberId": null,
+    "leadTypes": ["internet_lead", "no_show", "generic"],
+    "summary": "Answers inbound calls, figures out what the caller needs, and routes them to the right specialist.",
+    "textOnly": false,
+    "notes": "Inbound voice router; not yet created in Eleven."
+  },
   "jake": {
     "label": "Jake — Sales Closer",
     "agentId": "agent_7401ktjd33pcemevm8m9w87k6e91",
     "phoneNumberId": "phnum_8601ktmasypyeg8b3vbemcpmvxym",
     "leadTypes": ["internet_lead", "no_show", "generic"],
-    "notes": "Dials direct via ElevenLabs outbound from +15615565075 (eleven_api mode)."
-  },
-  "dana": {
-    "label": "Dana — Follow-up / Equity",
-    "agentId": null,
-    "phoneNumberId": null,
-    "leadTypes": ["previously_sold", "no_show", "generic"],
-    "notes": "Needs her own number/agent before eleven_api mode or distinct deep-link routing."
-  },
-  "tara": {
-    "label": "Tara — Trade-In",
-    "agentId": null,
-    "phoneNumberId": null,
-    "leadTypes": ["generic"],
-    "notes": "Specialist — usually reached via transfer, not standalone campaigns."
+    "summary": "Works internet leads and follow-ups to set firm, scheduled dealership appointments.",
+    "textOnly": false,
+    "notes": "Live. Dials direct via ElevenLabs outbound from +15615565075."
   },
   "casey": {
-    "label": "Casey — Speed-to-Lead (text)",
+    "label": "Casey — Speed-to-Lead",
     "agentId": null,
     "phoneNumberId": null,
     "leadTypes": ["internet_lead"],
-    "notes": "Text/SMS channel; outbound via Twilio messaging, not voice dialing."
+    "summary": "Instantly texts brand-new internet leads, qualifies them, and hands a warm lead to sales.",
+    "textOnly": true,
+    "notes": "Text/SMS only — no outbound voice dialing."
+  },
+  "tara": {
+    "label": "Tara — Trade-In & Appraisal",
+    "agentId": null,
+    "phoneNumberId": null,
+    "leadTypes": ["generic"],
+    "summary": "Captures trade-in vehicle details and books a quick in-person appraisal.",
+    "textOnly": false,
+    "notes": "Specialist; not yet created in Eleven."
+  },
+  "dana": {
+    "label": "Dana — Follow-up / Equity Miner",
+    "agentId": null,
+    "phoneNumberId": null,
+    "leadTypes": ["previously_sold", "no_show", "generic"],
+    "summary": "Re-engages aged leads, no-shows, and owners with equity to get them back in.",
+    "textOnly": false,
+    "notes": "Outbound re-engagement; not yet created in Eleven."
   }
 }

@@ -51,6 +51,9 @@ app.get('/sim', (_req, res) => res.sendFile(path.join(__dirname, 'sim.html')));
 // Outbound campaign operator console (run a block by hand: paced deep links + outcomes).
 app.get('/campaign', (_req, res) => res.sendFile(path.join(__dirname, 'campaign.html')));
 
+// Agent dashboard — one widget per agent (avatar, summary, start-calls control).
+app.get('/agents', (_req, res) => res.sendFile(path.join(__dirname, 'agents-dashboard.html')));
+
 // ---- Arm the next call's lead context (called by the browser extension) ----
 app.post('/arm', (req, res) => {
   if (SHARED_SECRET && req.body.secret !== SHARED_SECRET) {
@@ -214,7 +217,7 @@ app.post('/campaign/ingest', async (req, res) => {
 app.get('/campaign/agents', (req, res) => {
   if (badSecret(req)) return res.status(401).json({ error: 'bad secret' });
   const out = {};
-  for (const [k, a] of Object.entries(AGENTS)) out[k] = { label: a.label, leadTypes: a.leadTypes || [], apiReady: !!(a.agentId && a.phoneNumberId), notes: a.notes || '' };
+  for (const [k, a] of Object.entries(AGENTS)) out[k] = { label: a.label, leadTypes: a.leadTypes || [], apiReady: !!(a.agentId && a.phoneNumberId), summary: a.summary || '', textOnly: !!a.textOnly, notes: a.notes || '' };
   res.json(out);
 });
 

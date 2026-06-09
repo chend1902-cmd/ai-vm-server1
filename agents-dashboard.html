@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Agent Dashboard</title>
+<style>
+  /* Functional only — design is a placeholder. */
+  body { margin: 0; font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: #0b0d12; color: #e6e9ef; padding: 1rem; }
+  h1 { font-size: 1.1rem; margin: 0 0 .75rem; }
+  .cfg { margin-bottom: 1rem; display: flex; gap: .5rem; flex-wrap: wrap; align-items: center; }
+  input, button { font: inherit; background: #0f131b; border: 1px solid #2a3344; color: #e6e9ef; border-radius: 6px; padding: .4rem .5rem; }
+  button { background: #2563eb; border: 0; cursor: pointer; }
+  button.secondary { background: #2a3344; }
+  .grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: .75rem; }
+  @media (max-width: 1100px) { .grid { grid-template-columns: repeat(2, 1fr); } }
+  .widget { background: #141821; border: 1px solid #232a38; border-radius: 10px; padding: .9rem; display: flex; flex-direction: column; gap: .5rem; min-height: 230px; }
+  .avatar { width: 56px; height: 56px; border-radius: 50%; background: #2a3344; display: flex; align-items: center; justify-content: center; font-size: 1.5rem; font-weight: 700; color: #cdd5e3; }
+  .name { font-weight: 700; }
+  .summary { color: #9aa3b2; font-size: 13px; flex: 1; }
+  .run { display: flex; flex-direction: column; gap: .4rem; }
+  .row { display: flex; gap: .4rem; align-items: center; }
+  .row input[type=number] { width: 4rem; }
+  .muted { color: #8b93a7; font-size: 12px; }
+  .status { font-size: 12px; color: #8b93a7; min-height: 1em; }
+  .badge { font-size: 11px; padding: .1rem .4rem; border-radius: 999px; border: 1px solid #2a3344; color: #8b93a7; }
+</style>
+</head>
+<body>
+  <h1>Agent Dashboard</h1>
+  <div class="cfg">
+    <label>Server <input id="server" size="32" placeholder="https://ai-vm-server1.onrender.com"></label>
+    <label>Secret <input id="secret" type="password" size="16"></label>
+    <button class="secondary" onclick="saveCfg()">Save</button>
+    <span id="cfgmsg" class="muted"></span>
+  </div>
+  <div class="grid" id="grid"><span class="muted">loading agents…</span></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let cfg = JSON.parse(localStorage.getItem('danaCfg') || '{}');           // shared with /campaign
+$('server').value = cfg.server || location.origin;
+$('secret').value = cfg.secret || '';
+function saveCfg(){ cfg = { server: $('server').value.replace(/\/$/,''), secret: $('secret').value }; localStorage.setItem('danaCfg', JSON.stringify(cfg)); $('cfgmsg').textContent='saved'; setTimeout(()=>$('cfgmsg').textContent='',1200); load(); }
+if(!cfg.server){ saveCfg(); }
+
+async function api(path, body){
+  const url = cfg.server + path + (body ? '' : (path.includes('?')?'&':'?')+'secret='+encodeURIComponent(cfg.secret));
+  const r = await fetch(url, { method: body?'POST':'GET', headers: body?{'Content-Type':'application/json'}:{}, body: body?JSON.stringify({secret:cfg.secret,...body}):undefined });
+  return r.json().catch(()=>({}));
+}
+
+function initial(label){ const n=(label||'?').split('—')[0].trim(); return (n[0]||'?').toUpperCase(); }
+
+async function load(){
+  let agents;
+  try { agents = await api('/campaign/agents'); } catch(e){ $('grid').innerHTML='<span class="muted">offline / bad secret</span>'; return; }
+  const keys = Object.keys(agents||{});
+  if(!keys.length){ $('grid').innerHTML='<span class="muted">no agents (set secret + Save)</span>'; return; }
+  $('grid').innerHTML = keys.map(k=>{
+    const a = agents[k];
+    // Avatar: placeholder initials circle (swap for a real image later).
+    const av = `<div class="avatar">${initial(a.label)}</div>`;
+    const phone = a.textOnly
+      ? `<div class="muted">💬 text / SMS agent — no outbound calls</div>`
+      : `<div class="run">
+           <div class="row"><input type="number" id="n-${k}" min="1" value="25"> calls
+             <label class="muted"><input type="checkbox" id="dry-${k}" checked> dry run</label></div>
+           <button onclick="startRun('${k}')">📞 Start calls</button>
+           <div class="status" id="st-${k}"></div>
+         </div>`;
+    const ready = a.textOnly ? '' : (a.apiReady ? '<span class="badge">live</span>' : '<span class="badge">not wired</span>');
+    return `<div class="widget">
+      ${av}
+      <div class="name">${a.label} ${ready}</div>
+      <div class="summary">${a.summary||''}</div>
+      ${phone}
+    </div>`;
+  }).join('');
+}
+
+async function startRun(key){
+  const n = Math.max(1, parseInt($('n-'+key).value||'1',10));
+  const dry = $('dry-'+key).checked;
+  $('st-'+key).textContent = 'starting…';
+  const d = await api('/campaign/start', { agent: key, mode: 'eleven_api', dryRun: dry, maxCalls: n, pacePerMinute: 10, durationMinutes: 120 });
+  if(d.ok){ const s=d.status||{}; $('st-'+key).textContent = `${dry?'DRY RUN':'LIVE'} — up to ${n} calls (mode ${s.mode})`; }
+  else { $('st-'+key).textContent = 'error: ' + (d.error||'?'); }
+}
+
+load();
+</script>
+</body>
+</html>
